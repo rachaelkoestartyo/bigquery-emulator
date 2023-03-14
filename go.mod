@@ -12,12 +12,12 @@ require (
 	github.com/goccy/go-json v0.10.0
 	github.com/goccy/go-yaml v1.9.5
 	github.com/goccy/go-zetasql v0.5.1
-	github.com/goccy/go-zetasqlite v0.13.5
 	github.com/google/go-cmp v0.5.9
 	github.com/googleapis/gax-go/v2 v2.7.0
 	github.com/gorilla/mux v1.8.0
 	github.com/jessevdk/go-flags v1.5.0
 	github.com/linkedin/goavro/v2 v2.12.0
+	github.com/marcellustavares/go-zetasqlite v0.13.5-LIFERAY-PATCH-4
 	github.com/segmentio/parquet-go v0.0.0-20221020201645-63215c8128ff
 	go.uber.org/zap v1.21.0
 	golang.org/x/sync v0.1.0

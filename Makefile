@@ -1,4 +1,4 @@
-VERSION ?= latest
+VERSION ?= v0.13.5-LIFERAY-PATCH-1
 REVISION := $(shell git rev-parse --short HEAD)
 UNAME_OS := $(shell uname -s)
 ifneq ($(UNAME_OS),Darwin)

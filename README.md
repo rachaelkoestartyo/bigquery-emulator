@@ -41,7 +41,7 @@ For example, it has the following features.
 - Templated Argument Function
 - JavaScript UDF
 
-If you want to know the specific features supported, please see [here](https://github.com/goccy/go-zetasqlite#status)
+If you want to know the specific features supported, please see [here](https://github.com/marcellustavares/go-zetasqlite#status)
 
 # Goals and Sponsors
 
@@ -293,7 +293,7 @@ SELECT %s([
 
 # Debugging
 
-If you have specified a database file when starting `bigquery-emulator`, you can check the status of the database by using the `zetasqlite-cli` tool. See [here](https://github.com/goccy/go-zetasqlite/tree/main/cmd/zetasqlite-cli#readme) for details.
+If you have specified a database file when starting `bigquery-emulator`, you can check the status of the database by using the `zetasqlite-cli` tool. See [here](https://github.com/marcellustavares/go-zetasqlite/tree/main/cmd/zetasqlite-cli#readme) for details.
 
 # How it works
 
