@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/marcellustavares/go-zetasqlite"
+	"github.com/rachaelkoestartyo/go-zetasqlite"
 	"go.uber.org/zap"
 	bigqueryv2 "google.golang.org/api/bigquery/v2"
 

@@ -7,7 +7,7 @@ import (
 
 	"github.com/apache/arrow/go/v10/arrow"
 	"github.com/apache/arrow/go/v10/arrow/array"
-	"github.com/marcellustavares/go-zetasqlite"
+	"github.com/rachaelkoestartyo/go-zetasqlite"
 	bigqueryv2 "google.golang.org/api/bigquery/v2"
 )
 
