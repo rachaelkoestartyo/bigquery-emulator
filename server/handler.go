@@ -1771,11 +1771,16 @@ func (h *jobsQueryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		errorResponse(ctx, w, errInvalid(err.Error()))
 		return
 	}
+	useInt64Timestamp := false
+	if options := req.FormatOptions; options != nil {
+		useInt64Timestamp = options.UseInt64Timestamp
+	}
+	useInt64Timestamp = useInt64Timestamp || isFormatOptionsUseInt64Timestamp(r)
 	res, err := h.Handle(ctx, &jobsQueryRequest{
 		server:            server,
 		project:           project,
 		queryRequest:      &req,
-		useInt64Timestamp: isFormatOptionsUseInt64Timestamp(r),
+		useInt64Timestamp: useInt64Timestamp,
 	})
 	if err != nil {
 		errorResponse(ctx, w, errInvalidQuery(err.Error()))
@@ -2448,10 +2453,11 @@ func (h *tabledataListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	dataset := datasetFromContext(ctx)
 	table := tableFromContext(ctx)
 	res, err := h.Handle(ctx, &tabledataListRequest{
-		server:  server,
-		project: project,
-		dataset: dataset,
-		table:   table,
+		server:            server,
+		project:           project,
+		dataset:           dataset,
+		table:             table,
+		useInt64Timestamp: isFormatOptionsUseInt64Timestamp(r),
 	})
 	if err != nil {
 		errorResponse(ctx, w, errInternalError(err.Error()))
@@ -2461,10 +2467,11 @@ func (h *tabledataListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 }
 
 type tabledataListRequest struct {
-	server  *Server
-	project *metadata.Project
-	dataset *metadata.Dataset
-	table   *metadata.Table
+	server            *Server
+	project           *metadata.Project
+	dataset           *metadata.Dataset
+	table             *metadata.Table
+	useInt64Timestamp bool
 }
 
 func (h *tabledataListHandler) Handle(ctx context.Context, r *tabledataListRequest) (*internaltypes.TableDataList, error) {
@@ -2488,8 +2495,9 @@ func (h *tabledataListHandler) Handle(ctx context.Context, r *tabledataListReque
 	if err != nil {
 		return nil, err
 	}
+
 	return &internaltypes.TableDataList{
-		Rows:      response.Rows,
+		Rows:      internaltypes.Format(response.Schema, response.Rows, r.useInt64Timestamp),
 		TotalRows: response.TotalRows,
 	}, nil
 }
