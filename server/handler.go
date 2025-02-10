@@ -2641,6 +2641,7 @@ func createTableMetadata(ctx context.Context, tx *connection.Tx, server *Server,
 	table.Type = string(internaltypes.DefaultTableType) // TODO: need to handle other table types
 	if table.View != nil {
 		table.Type = string(internaltypes.ViewTableType)
+		table.View.Query = strings.TrimRight(table.View.Query, ";")
 		response, err := server.contentRepo.Query(
 			ctx,
 			tx,
