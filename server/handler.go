@@ -2641,6 +2641,18 @@ func createTableMetadata(ctx context.Context, tx *connection.Tx, server *Server,
 	table.Type = string(internaltypes.DefaultTableType) // TODO: need to handle other table types
 	if table.View != nil {
 		table.Type = string(internaltypes.ViewTableType)
+		response, err := server.contentRepo.Query(
+			ctx,
+			tx,
+			table.TableReference.ProjectId,
+			table.TableReference.DatasetId,
+			fmt.Sprintf("SELECT * FROM (%s) LIMIT 0", table.View.Query),
+			nil,
+		)
+		if err != nil {
+			return nil, errInvalid(fmt.Sprintf("could not determine schema from query: %s", err.Error()))
+		}
+		table.Schema = response.Schema
 	}
 	table.Kind = "bigquery#table"
 	table.SelfLink = fmt.Sprintf(
@@ -2692,12 +2704,12 @@ func (h *tablesInsertHandler) Handle(ctx context.Context, r *tablesInsertRequest
 	if serverErr != nil {
 		return nil, serverErr
 	}
-	if r.table.Schema != nil {
+	if table.Type == string(internaltypes.DefaultTableType) {
 		if err := r.server.contentRepo.CreateTable(ctx, tx, r.table); err != nil {
 			return nil, errInvalidQuery(err.Error())
 		}
 	}
-	if r.table.View != nil {
+	if table.Type == string(internaltypes.ViewTableType) {
 		if err := r.server.contentRepo.CreateView(ctx, tx, r.table); err != nil {
 			return nil, errInvalidQuery(err.Error())
 		}
