@@ -2898,11 +2898,11 @@ func TestRowAccessPolicy(t *testing.T) {
 	}
 	if gotJob.ID() != job.ID() {
 		t.Fatalf("failed to get job expected ID %s. but got %s", job.ID(), gotJob.ID())
-  }
+	}
 }
 
 func TestPatchTable(t *testing.T) {
-  	ctx := context.Background()
+	ctx := context.Background()
 
 	const (
 		projectName = "test"
@@ -2962,5 +2962,61 @@ func TestPatchTable(t *testing.T) {
 	)
 	if err == nil || !strings.Contains(err.Error(), "schema updates unsupported") {
 		t.Fatalf("expected unsupported schema update error; got [%s]", err)
+	}
+}
+
+func TestViewSchemaHydration(t *testing.T) {
+	ctx := context.Background()
+
+	const (
+		projectName = "test"
+	)
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.SetProject(projectName); err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.YAMLSource(filepath.Join("testdata", "data.yaml"))); err != nil {
+		t.Fatal(err)
+	}
+
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+
+	client, err := bigquery.NewClient(
+		ctx,
+		projectName,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	view := client.Dataset("dataset1").Table("test_view")
+
+	if err := view.Create(ctx, &bigquery.TableMetadata{
+		Name:      "test_view",
+		ViewQuery: "SELECT id, name FROM dataset1.table_a",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if viewMetadata, err := client.Dataset("dataset1").Table("test_view").Metadata(ctx); err != nil {
+		t.Fatal(err)
+	} else {
+		if diff := cmp.Diff(viewMetadata.Schema, bigquery.Schema{
+			&bigquery.FieldSchema{Name: "id", Type: "INTEGER"},
+			&bigquery.FieldSchema{Name: "name", Type: "STRING"},
+		}, cmpopts.EquateApproxTime(1*time.Second)); diff != "" {
+			t.Errorf("(-want +got):\n%s", diff)
+		}
 	}
 }
