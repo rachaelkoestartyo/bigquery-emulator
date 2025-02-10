@@ -2650,7 +2650,7 @@ func createTableMetadata(ctx context.Context, tx *connection.Tx, server *Server,
 			nil,
 		)
 		if err != nil {
-			return nil, errInvalid(fmt.Sprintf("could not determine schema from query: %s", err.Error()))
+			return nil, errInvalidQuery(fmt.Sprintf("could not determine schema from query: %s", err.Error()))
 		}
 		table.Schema = response.Schema
 	}
@@ -2704,7 +2704,7 @@ func (h *tablesInsertHandler) Handle(ctx context.Context, r *tablesInsertRequest
 	if serverErr != nil {
 		return nil, serverErr
 	}
-	if table.Type == string(internaltypes.DefaultTableType) {
+	if table.Type == string(internaltypes.DefaultTableType) && table.Schema != nil {
 		if err := r.server.contentRepo.CreateTable(ctx, tx, r.table); err != nil {
 			return nil, errInvalidQuery(err.Error())
 		}
