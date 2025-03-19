@@ -361,7 +361,7 @@ func (r *Repository) CreateOrReplaceTable(ctx context.Context, tx *connection.Tx
 	return nil
 }
 
-func (r *Repository) AddTableData(ctx context.Context, tx *connection.Tx, projectID, datasetID string, table *types.Table) error {
+func (r *Repository) AddTableData(ctx context.Context, tx *connection.Tx, projectID, datasetID string, table *types.Table, overwrite bool) error {
 	if len(table.Data) == 0 {
 		return nil
 	}
@@ -385,6 +385,16 @@ func (r *Repository) AddTableData(ctx context.Context, tx *connection.Tx, projec
 		strings.Join(columnsWithEscape, ","),
 		strings.Join(placeholders, ","),
 	)
+
+	if overwrite {
+		_, err := tx.Tx().ExecContext(ctx, fmt.Sprintf(
+			"DELETE FROM `%s` WHERE true",
+			r.tablePath(projectID, datasetID, table.ID),
+		))
+		if err != nil {
+			return fmt.Errorf("failed to truncate table: %w", err)
+		}
+	}
 
 	stmt, err := tx.Tx().PrepareContext(ctx, query)
 	if err != nil {

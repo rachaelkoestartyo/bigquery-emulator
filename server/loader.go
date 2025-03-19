@@ -59,7 +59,7 @@ func (s *Server) addTableData(ctx context.Context, tx *connection.Tx, project *t
 	if err := s.contentRepo.CreateOrReplaceTable(ctx, tx, project.ID, dataset.ID, table); err != nil {
 		return err
 	}
-	if err := s.contentRepo.AddTableData(ctx, tx, project.ID, dataset.ID, table); err != nil {
+	if err := s.contentRepo.AddTableData(ctx, tx, project.ID, dataset.ID, table, false); err != nil {
 		return err
 	}
 	return nil

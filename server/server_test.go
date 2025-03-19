@@ -2307,10 +2307,8 @@ func TestImportWithWildcardFromGCS(t *testing.T) {
 		}
 		rows = append(rows, &r)
 	}
+	// WRITE_TRUNCATE truncates the original rows from initialObjects
 	if diff := cmp.Diff([]*row{
-		{ID: 1, Value: 11},
-		{ID: 2, Value: 12},
-		{ID: 3, Value: 13},
 		{ID: 11, Value: 21},
 		{ID: 12, Value: 22},
 		{ID: 13, Value: 23},
@@ -2815,6 +2813,84 @@ func TestInformationSchema(t *testing.T) {
 		}
 	})
 
+}
+
+func TestWriteDisposition(t *testing.T) {
+	ctx := context.Background()
+
+	const (
+		projectName = "test"
+	)
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.SetProject(projectName); err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.YAMLSource(filepath.Join("testdata", "data.yaml"))); err != nil {
+		t.Fatal(err)
+	}
+
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+
+	client, err := bigquery.NewClient(
+		ctx,
+		projectName,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	query := client.Query(`
+		CREATE TABLE dataset1.existing_table (field INT64);
+		INSERT INTO dataset1.existing_table (field) VALUES (123)
+	`)
+	job, err := query.Run(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = job.Wait(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	query = client.Query("SELECT 456 AS field")
+	query.QueryConfig.WriteDisposition = "WRITE_TRUNCATE"
+	query.QueryConfig.Dst = &bigquery.Table{
+		ProjectID: projectName,
+		DatasetID: "dataset1",
+		TableID:   "existing_table",
+	}
+	_, err = query.Run(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = job.Wait(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	query = client.Query("SELECT field FROM dataset1.existing_table")
+	rows, err := query.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var field []bigquery.Value
+	err = rows.Next(&field)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(field) != 1 || field[0].(int64) != 456 {
+		t.Fatalf("expected 456 to have replaced 123; got [%d]", field[0])
+	}
 }
 
 func TestRowAccessPolicy(t *testing.T) {
