@@ -2307,10 +2307,8 @@ func TestImportWithWildcardFromGCS(t *testing.T) {
 		}
 		rows = append(rows, &r)
 	}
+	// WRITE_TRUNCATE truncates the original rows from initialObjects
 	if diff := cmp.Diff([]*row{
-		{ID: 1, Value: 11},
-		{ID: 2, Value: 12},
-		{ID: 3, Value: 13},
 		{ID: 11, Value: 21},
 		{ID: 12, Value: 22},
 		{ID: 13, Value: 23},
