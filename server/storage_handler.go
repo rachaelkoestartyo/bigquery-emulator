@@ -662,6 +662,7 @@ func (s *storageWriteServer) insertTableData(ctx context.Context, tx *connection
 		status.projectID,
 		status.datasetID,
 		tableDef,
+		false,
 	); err != nil {
 		return fmt.Errorf("failed to add table data: %w", err)
 	}

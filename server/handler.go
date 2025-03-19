@@ -558,7 +558,7 @@ func (h *uploadContentHandler) Handle(ctx context.Context, r *uploadContentReque
 		return err
 	}
 	defer tx.RollbackIfNotCommitted()
-	if err := r.server.contentRepo.AddTableData(ctx, tx, tableRef.ProjectId, tableRef.DatasetId, tableDef); err != nil {
+	if err := r.server.contentRepo.AddTableData(ctx, tx, tableRef.ProjectId, tableRef.DatasetId, tableDef, load.WriteDisposition == "WRITE_TRUNCATE"); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -1502,7 +1502,8 @@ func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*
 					return nil, fmt.Errorf("failed to create table: %w", serverErr)
 				}
 			}
-			if err := r.server.contentRepo.AddTableData(ctx, tx, tableRef.ProjectId, tableRef.DatasetId, tableDef); err != nil {
+
+			if err := r.server.contentRepo.AddTableData(ctx, tx, tableRef.ProjectId, tableRef.DatasetId, tableDef, job.Configuration.Query.WriteDisposition == "WRITE_TRUNCATE"); err != nil {
 				return nil, fmt.Errorf("failed to add table data: %w", err)
 			}
 		} else if response.TotalRows > 0 {
@@ -1709,7 +1710,7 @@ func (h *jobsInsertHandler) addQueryResultToDynamicDestinationTable(ctx context.
 	if err := r.server.contentRepo.CreateTable(ctx, tx, tableDef.ToBigqueryV2(projectID, datasetID)); err != nil {
 		return err
 	}
-	if err := r.server.contentRepo.AddTableData(ctx, tx, projectID, datasetID, tableDef); err != nil {
+	if err := r.server.contentRepo.AddTableData(ctx, tx, projectID, datasetID, tableDef, false); err != nil {
 		return fmt.Errorf("failed to add table data: %w", err)
 	}
 	return nil
@@ -2425,7 +2426,7 @@ func (h *tabledataInsertAllHandler) Handle(ctx context.Context, r *tabledataInse
 		return nil, err
 	}
 	defer tx.RollbackIfNotCommitted()
-	if err := r.server.contentRepo.AddTableData(ctx, tx, r.project.ID, r.dataset.ID, tableDef); err != nil {
+	if err := r.server.contentRepo.AddTableData(ctx, tx, r.project.ID, r.dataset.ID, tableDef, false); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
