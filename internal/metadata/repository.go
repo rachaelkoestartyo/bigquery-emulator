@@ -8,8 +8,9 @@ import (
 	"fmt"
 	"github.com/goccy/bigquery-emulator/internal"
 	"github.com/goccy/go-zetasqlite"
-	"github.com/mattn/go-sqlite3"
 	bigqueryv2 "google.golang.org/api/bigquery/v2"
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 
 	internaltypes "github.com/goccy/bigquery-emulator/internal/types"
 	"github.com/goccy/bigquery-emulator/types"
@@ -705,9 +706,9 @@ func (r *Repository) AddDataset(ctx context.Context, tx *sql.Tx, dataset *Datase
 		sql.Named("projectID", dataset.ProjectID),
 		sql.Named("metadata", string(metadata)),
 	); err != nil {
-		var sqliteError sqlite3.Error
+		var sqliteError sqlite.Error
 		if errors.As(errors.Unwrap(err), &sqliteError) {
-			if sqliteError.Code == sqlite3.ErrConstraint {
+			if sqliteError.Code() == sqlite3.SQLITE_CONSTRAINT {
 				return fmt.Errorf("dataset %s: %w", dataset.ID, ErrDuplicatedDataset)
 			}
 		}
@@ -727,7 +728,7 @@ func (r *Repository) UpdateDataset(ctx context.Context, tx *sql.Tx, dataset *Dat
 	}
 	if _, err := stmt.ExecContext(
 		ctx,
-		sql.Named("dataestID", dataset.ID),
+		sql.Named("datasetID", dataset.ID),
 		sql.Named("projectID", dataset.ProjectID),
 		sql.Named("metadata", string(metadata)),
 	); err != nil {
@@ -771,8 +772,8 @@ func (r *Repository) DeleteDataset(ctx context.Context, tx *sql.Tx, dataset *Dat
 	}
 	if _, err := stmt.ExecContext(
 		ctx,
-		dataset.ProjectID,
-		dataset.ID,
+		sql.Named("projectID", dataset.ProjectID),
+		sql.Named("id", dataset.ID),
 	); err != nil {
 		return err
 	}
