@@ -706,9 +706,9 @@ func (r *Repository) AddDataset(ctx context.Context, tx *sql.Tx, dataset *Datase
 		sql.Named("projectID", dataset.ProjectID),
 		sql.Named("metadata", string(metadata)),
 	); err != nil {
-		var sqliteError sqlite.Error
+		var sqliteError *sqlite.Error
 		if errors.As(errors.Unwrap(err), &sqliteError) {
-			if sqliteError.Code() == sqlite3.SQLITE_CONSTRAINT {
+			if sqliteError.Code() == sqlite3.SQLITE_CONSTRAINT_PRIMARYKEY {
 				return fmt.Errorf("dataset %s: %w", dataset.ID, ErrDuplicatedDataset)
 			}
 		}
