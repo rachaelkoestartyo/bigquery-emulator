@@ -1,4 +1,4 @@
-module github.com/Recidiviz/bigquery-emulator
+module github.com/goccy/bigquery-emulator
 
 go 1.24.0
 
