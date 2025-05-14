@@ -1,4 +1,4 @@
-FROM ghcr.io/goccy/go-zetasql:latest
+FROM ghcr.io/recidiviz/go-zetasql:latest
 
 ARG VERSION
 
