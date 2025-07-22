@@ -1,4 +1,4 @@
-FROM ghcr.io/recidiviz/go-zetasql:0.5.5-recidiviz.2
+FROM ghcr.io/recidiviz/go-zetasql:0.5.5-recidiviz.3
 
 ARG VERSION
 
