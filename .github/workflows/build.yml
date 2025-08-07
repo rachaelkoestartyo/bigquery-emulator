@@ -12,21 +12,21 @@ jobs:
   # and stores all the image digests as Github Actions build output artifacts so that we can referenced them
   # in the `merge-platform-images` job below
   build-image:
-    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
     strategy:
       matrix:
         include:
-          - os: ubuntu-latest
+          - runner: ubuntu-latest
             artifact_name: bigquery-emulator
             asset_name: bigquery-emulator-linux-amd64
             platform: linux/amd64
-          - os: macos-latest
+          - runner: runs-on=${{github.run_id}}/runner=4cpu-linux-arm64
             artifact_name: bigquery-emulator
-            asset_name: bigquery-emulator-darwin-arm64
+            asset_name: bigquery-emulator-linux-arm64
             platform: linux/arm64
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - name: setup docker buildx
