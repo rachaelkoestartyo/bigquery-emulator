@@ -5,45 +5,127 @@ on:
       - v*
 env:
   REGISTRY: ghcr.io
+  REGISTRY_IMAGE: ghcr.io/recidiviz/bigquery-emulator
 
 jobs:
+  # For each platform in the matrix, creates and pushes a platform-compatible Docker image to the registry
+  # and stores all the image digests as Github Actions build output artifacts so that we can referenced them
+  # in the `merge-platform-images` job below
   build-image:
-    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            artifact_name: bigquery-emulator
+            asset_name: bigquery-emulator-linux-amd64
+            platform: linux/amd64
+          - runner: runs-on=${{github.run_id}}/runner=4cpu-linux-arm64
+            artifact_name: bigquery-emulator
+            asset_name: bigquery-emulator-linux-arm64
+            platform: linux/arm64
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/metadata-action@v3
-        id: meta
-        with:
-          images: ${{ env.REGISTRY }}/Recidiviz/bigquery-emulator
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
       - name: setup docker buildx
-        uses: docker/setup-buildx-action@v2
+        uses: docker/setup-buildx-action@v3
       - name: cache for linux
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         if: runner.os == 'Linux'
         with:
           path: |
             ~/.cache/go-build
             ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          key: ${{ runner.os }}-go-${{matrix.asset_name}}-${{ hashFiles('**/go.sum') }}
           restore-keys: |
-            ${{ runner.os }}-go-
+            ${{ runner.os }}-go-${{matrix.asset_name}}-
+      - name: cache for macOS
+        uses: actions/cache@v3
+        if: runner.os == 'macOS'
+        with:
+          path: |
+            ~/Library/Caches/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{matrix.asset_name}}-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-${{matrix.asset_name}}
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        name: Build and push by digest
+        id: build
+        with:
+          context: .
+          push: true
+          tags: ${{ env.REGISTRY_IMAGE }}
+          outputs: type=image,push-by-digest=true,name-canonical=true,push=true
+          platforms: ${{ matrix.platform }}
+          cache-from: type=local,src=~/.cache/go-build
+
+      - name: Export digest
+        run: |
+          mkdir -p ${{ runner.temp }}/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "${{ runner.temp }}/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.asset_name }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # Creates a multi-architecture image manifest from the digests of the individual images built above.
+  # This produces a single image tag that contains all the platform-specific images.
+  merge-platform-images:
+    runs-on: ubuntu-latest
+    needs:
+      - build-image
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - uses: docker/login-action@v2
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v3
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
         with:
-          context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=local,src=~/.cache/go-build
-          build-args: |
-            VERSION=v${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.version'] }}
+          images: ${{ env.REGISTRY_IMAGE }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - name: Create manifest list and push
+        working-directory: ${{ runner.temp }}/digests
+        # Extract image tags from the metadata action output and create a manifest list
+        run: |
+          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.REGISTRY_IMAGE }}@sha256:%s ' *)
+
+      - name: Inspect image
+        run: |
+          docker buildx imagetools inspect ${{ env.REGISTRY_IMAGE }}:${{ steps.meta.outputs.version }}
