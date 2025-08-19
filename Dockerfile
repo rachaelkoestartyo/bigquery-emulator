@@ -4,6 +4,8 @@ ARG VERSION
 
 WORKDIR /work
 
+RUN apt update && apt install -y lld && rm -rf /var/lib/apt/lists/*
+
 COPY . ./
 
 RUN go mod edit -replace github.com/goccy/go-zetasql=../go-zetasql
