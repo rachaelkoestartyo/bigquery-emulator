@@ -22,7 +22,7 @@ jobs:
             artifact_name: bigquery-emulator
             asset_name: bigquery-emulator-linux-amd64
             platform: linux/amd64
-          - runner: runs-on=${{github.run_id}}/runner=4cpu-linux-arm64
+          - runner: ubuntu-24.04-arm
             artifact_name: bigquery-emulator
             asset_name: bigquery-emulator-linux-arm64
             platform: linux/arm64
