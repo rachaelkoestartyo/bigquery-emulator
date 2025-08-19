@@ -2,8 +2,7 @@ VERSION ?= latest
 REVISION := $(shell git rev-parse --short HEAD)
 
 emulator/build:
-	CGO_ENABLED=1 CXX=clang++ CGO_CFLAGS="-fPIC" CGO_CXXFLAGS="-fPIC" go build -work -a -x -o bigquery-emulator \
-		-ldflags='${STATIC_LINK_FLAG}' \
+	CGO_ENABLED=1 CXX=clang++ go build -o bigquery-emulator \
 		./cmd/bigquery-emulator
 
 docker/build:
