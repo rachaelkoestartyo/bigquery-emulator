@@ -1,19 +1,8 @@
 VERSION ?= latest
 REVISION := $(shell git rev-parse --short HEAD)
 
-UNAME_OS := $(shell uname -s)
-UNAME_ARCH := $(shell uname -m)
-ifeq ($(UNAME_OS),Linux)
-  ifeq ($(UNAME_ARCH),aarch64)
-    STATIC_LINK_FLAG := -linkmode external -extldflags "-static -fPIE -v"
-  else
-    STATIC_LINK_FLAG := -linkmode external -extldflags "-static -v"
-  endif
-endif
-
 emulator/build:
-	CGO_ENABLED=1 CXX=clang++ CGO_CFLAGS="-fPIE" CGO_CXXFLAGS="-fPIE" go build -work -a -x -o bigquery-emulator \
-		-ldflags='${STATIC_LINK_FLAG}' \
+	CGO_ENABLED=1 CXX=clang++ go build -o bigquery-emulator \
 		./cmd/bigquery-emulator
 
 docker/build:
