@@ -2644,18 +2644,6 @@ func createTableMetadata(ctx context.Context, tx *connection.Tx, server *Server,
 	if table.View != nil {
 		table.Type = string(internaltypes.ViewTableType)
 		table.View.Query = strings.TrimRight(table.View.Query, contentdata.ViewQueryEndCutset)
-		response, err := server.contentRepo.Query(
-			ctx,
-			tx,
-			table.TableReference.ProjectId,
-			table.TableReference.DatasetId,
-			fmt.Sprintf("SELECT * FROM (%s) LIMIT 0", table.View.Query),
-			nil,
-		)
-		if err != nil {
-			return nil, errInvalidQuery(fmt.Sprintf("could not determine schema from query: %s", err.Error()))
-		}
-		table.Schema = response.Schema
 	}
 	table.Kind = "bigquery#table"
 	table.SelfLink = fmt.Sprintf(
@@ -2703,19 +2691,26 @@ func (h *tablesInsertHandler) Handle(ctx context.Context, r *tablesInsertRequest
 	}
 	defer tx.RollbackIfNotCommitted()
 
+	if r.table.View != nil {
+		schema, err := r.server.contentRepo.CreateView(ctx, tx, r.table)
+		if err != nil {
+			if strings.HasSuffix(err.Error(), "already exists (1)") {
+				return nil, errDuplicate(err.Error())
+			}
+			return nil, errInvalidQuery(err.Error())
+		}
+		r.table.Schema = schema
+	} else if r.table.Schema != nil {
+		if err := r.server.contentRepo.CreateTable(ctx, tx, r.table); err != nil {
+			if strings.HasSuffix(err.Error(), "already exists (1)") {
+				return nil, errDuplicate(err.Error())
+			}
+			return nil, errInvalidQuery(err.Error())
+		}
+	}
 	table, serverErr := createTableMetadata(ctx, tx, r.server, r.project, r.dataset, r.table)
 	if serverErr != nil {
 		return nil, serverErr
-	}
-	if table.Type == string(internaltypes.DefaultTableType) && table.Schema != nil {
-		if err := r.server.contentRepo.CreateTable(ctx, tx, r.table); err != nil {
-			return nil, errInvalidQuery(err.Error())
-		}
-	}
-	if table.Type == string(internaltypes.ViewTableType) {
-		if err := r.server.contentRepo.CreateView(ctx, tx, r.table); err != nil {
-			return nil, errInvalidQuery(err.Error())
-		}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, errInternalError(fmt.Errorf("failed to commit table: %w", err).Error())

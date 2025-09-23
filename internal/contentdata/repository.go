@@ -104,27 +104,50 @@ func (r *Repository) CreateTable(ctx context.Context, tx *connection.Tx, table *
 	return nil
 }
 
-func (r *Repository) CreateView(ctx context.Context, tx *connection.Tx, table *bigqueryv2.Table) error {
+func getSchemaFromResult(result sql.Result) (*bigqueryv2.TableSchema, error) {
+	changedCatalog, err := zetasqlite.ChangedCatalogFromResult(result)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get changed catalog: %w", err)
+	}
+	if len(changedCatalog.Table.Added) != 1 {
+		return nil, fmt.Errorf("catalog detected %d tables added; but expected one", len(changedCatalog.Table.Added))
+	}
+	createdTable := changedCatalog.Table.Added[0]
+	fields := make([]*bigqueryv2.TableFieldSchema, 0, len(createdTable.Columns))
+	for _, col := range createdTable.Columns {
+		zetasqlType, err := col.Type.ToZetaSQLType()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get zetasql type: %w", err)
+		}
+		fields = append(fields, types.TableFieldSchemaFromZetaSQLType(col.Name, zetasqlType))
+	}
+
+	return &bigqueryv2.TableSchema{Fields: fields}, nil
+}
+
+func (r *Repository) CreateView(ctx context.Context, tx *connection.Tx, table *bigqueryv2.Table) (*bigqueryv2.TableSchema, error) {
 	if err := tx.ContentRepoMode(); err != nil {
-		return err
+		return nil, err
 	}
 	defer func() {
 		_ = tx.MetadataRepoMode()
 	}()
 	ref := table.TableReference
 	if ref == nil {
-		return fmt.Errorf("TableReference is nil")
+		return nil, fmt.Errorf("TableReference is nil")
 	}
 	viewDefinition := table.View
 	if viewDefinition == nil {
-		return fmt.Errorf("ViewDefinition is nil")
+		return nil, fmt.Errorf("ViewDefinition is nil")
 	}
 	tablePath := r.tablePath(ref.ProjectId, ref.DatasetId, ref.TableId)
 	query := fmt.Sprintf("CREATE VIEW `%s` AS (%s)", tablePath, strings.TrimRight(viewDefinition.Query, ViewQueryEndCutset))
-	if _, err := tx.Tx().ExecContext(ctx, query); err != nil {
-		return fmt.Errorf("failed to create view %s: %w", query, err)
+	result, err := tx.Tx().ExecContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create view %s: %w", query, err)
 	}
-	return nil
+	schema, err := getSchemaFromResult(result)
+	return schema, err
 }
 
 func (r *Repository) encodeSchemaField(field *bigqueryv2.TableFieldSchema) string {
