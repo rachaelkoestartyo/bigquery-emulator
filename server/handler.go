@@ -2691,7 +2691,6 @@ func (h *tablesInsertHandler) Handle(ctx context.Context, r *tablesInsertRequest
 	}
 	defer tx.RollbackIfNotCommitted()
 
-	// Create
 	if r.table.View != nil {
 		schema, err := r.server.contentRepo.CreateView(ctx, tx, r.table)
 		if err != nil {
