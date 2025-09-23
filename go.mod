@@ -98,4 +98,4 @@ require (
 	modernc.org/memory v1.9.1 // indirect
 )
 
-replace github.com/goccy/go-zetasqlite => github.com/Recidiviz/go-zetasqlite v0.18.0-recidiviz.13
+replace github.com/goccy/go-zetasqlite => github.com/Recidiviz/go-zetasqlite v0.18.0-recidiviz.14
