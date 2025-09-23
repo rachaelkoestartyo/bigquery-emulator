@@ -1223,7 +1223,7 @@ func TestDuplicateTableWithSchema(t *testing.T) {
 			t.Fatalf("%+v", ge)
 		}
 	} else {
-		t.Fatalf(("Threre should be error, when table name duplicates."))
+		t.Fatalf(("There should be error, when table name duplicates."))
 	}
 }
 

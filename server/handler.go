@@ -2694,11 +2694,17 @@ func (h *tablesInsertHandler) Handle(ctx context.Context, r *tablesInsertRequest
 	if r.table.View != nil {
 		schema, err := r.server.contentRepo.CreateView(ctx, tx, r.table)
 		if err != nil {
+			if strings.HasSuffix(err.Error(), "already exists (1)") {
+				return nil, errDuplicate(err.Error())
+			}
 			return nil, errInvalidQuery(err.Error())
 		}
 		r.table.Schema = schema
 	} else if r.table.Schema != nil {
 		if err := r.server.contentRepo.CreateTable(ctx, tx, r.table); err != nil {
+			if strings.HasSuffix(err.Error(), "already exists (1)") {
+				return nil, errDuplicate(err.Error())
+			}
 			return nil, errInvalidQuery(err.Error())
 		}
 	}
