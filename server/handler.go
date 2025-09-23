@@ -2697,7 +2697,7 @@ func (h *tablesInsertHandler) Handle(ctx context.Context, r *tablesInsertRequest
 			return nil, errInvalidQuery(err.Error())
 		}
 		r.table.Schema = schema
-	} else {
+	} else if r.table.Schema != nil {
 		if err := r.server.contentRepo.CreateTable(ctx, tx, r.table); err != nil {
 			return nil, errInvalidQuery(err.Error())
 		}
