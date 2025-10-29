@@ -48,11 +48,11 @@ func New(storage Storage) (*Server, error) {
 		}
 	}
 	db, err := sql.Open("zetasqlite", string(storage))
-	db.SetConnMaxIdleTime(-1)
-	db.SetConnMaxLifetime(1<<63 - 1)
 	if err != nil {
 		return nil, err
 	}
+	db.SetConnMaxIdleTime(-1)
+	db.SetConnMaxLifetime(1<<63 - 1)
 	server.db = db
 	server.loggerConfig = &zap.Config{
 		Level:             zap.NewAtomicLevelAt(zap.ErrorLevel),

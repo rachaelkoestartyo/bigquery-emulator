@@ -1484,11 +1484,11 @@ func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*
 			if err != nil {
 				return nil, err
 			}
-			destinationDataset, err := r.project.Dataset(ctx, tableRef.DatasetId)
-			if destinationDataset == nil || err != nil {
-				return nil, fmt.Errorf("failed to find destination dataset: %s %w", tableRef.DatasetId, err)
+			destinationDataset, err := r.server.metaRepo.FindDatasetWithConnection(ctx, tx.Tx(), tableRef.ProjectId, tableRef.DatasetId)
+			if err != nil {
+				return nil, fmt.Errorf("failed to find destination dataset: %s, err: %s", tableRef.DatasetId, err)
 			}
-			destinationTable, err := destinationDataset.Table(ctx, tableRef.TableId)
+			destinationTable, err := r.server.metaRepo.FindTableWithConnection(ctx, tx.Tx(), destinationDataset.ProjectID, destinationDataset.ID, tableRef.TableId)
 			if err != nil {
 				return nil, fmt.Errorf("failed to find destination table: %w", err)
 			}

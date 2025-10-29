@@ -3,7 +3,6 @@ package internal
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"github.com/goccy/go-zetasqlite"
 )
 
@@ -33,9 +32,5 @@ func NewPreparedStatementRepository(db *sql.DB, queries []Statement) *PreparedSt
 
 func (r *PreparedStatementRepository) Get(ctx context.Context, tx *sql.Tx, name Statement) (*sql.Stmt, error) {
 	ctx = zetasqlite.WithQueryFormattingDisabled(ctx)
-	if stmt, ok := r.preparedQueries[name]; ok {
-		return tx.StmtContext(ctx, stmt), nil
-	}
-
-	return nil, fmt.Errorf("could not find prepared statement: %s", name)
+	return tx.PrepareContext(ctx, string(name))
 }
