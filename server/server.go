@@ -67,11 +67,16 @@ func New(storage Storage) (*Server, error) {
 		return nil, fmt.Errorf("invalid default logger config: %w", err)
 	}
 	server.logger = zap.NewNop()
-	metaRepo, err := metadata.NewRepository(db)
+
+	connectionManager, err := connection.NewManager(context.Background(), db)
 	if err != nil {
 		return nil, err
 	}
-	server.connMgr = connection.NewManager(db)
+	server.connMgr = connectionManager
+	metaRepo, err := metadata.NewRepository(db, connectionManager)
+	if err != nil {
+		return nil, err
+	}
 	server.metaRepo = metaRepo
 	server.contentRepo = contentdata.NewRepository(db)
 
@@ -91,6 +96,7 @@ func New(storage Storage) (*Server, error) {
 	r.Use(accessLogMiddleware())
 	r.Use(decompressMiddleware())
 	r.Use(withServerMiddleware(server))
+	r.Use(withConnectionMiddleware())
 	r.Use(withProjectMiddleware())
 	r.Use(withDatasetMiddleware())
 	r.Use(withJobMiddleware())
@@ -118,25 +124,21 @@ func (s *Server) Close() error {
 
 func (s *Server) SetProject(id string) error {
 	ctx := context.Background()
-	conn, err := s.connMgr.Connection(ctx, id, "")
+	err := s.connMgr.ExecuteWithTransaction(ctx, func(ctx context.Context, tx *connection.Tx) error {
+		tx.SetProjectAndDataset(id, "")
+		if err := tx.MetadataRepoMode(); err != nil {
+			return err
+		}
+		if err := s.metaRepo.AddProjectIfNotExists(
+			ctx,
+			tx.Tx(),
+			metadata.NewProject(s.metaRepo, id),
+		); err != nil {
+			return err
+		}
+		return nil
+	})
 	if err != nil {
-		return err
-	}
-	tx, err := conn.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to start transaction: %w", err)
-	}
-	if err := tx.MetadataRepoMode(); err != nil {
-		return err
-	}
-	if err := s.metaRepo.AddProjectIfNotExists(
-		ctx,
-		tx.Tx(),
-		metadata.NewProject(s.metaRepo, id),
-	); err != nil {
-		return err
-	}
-	if err := tx.Commit(); err != nil {
 		return err
 	}
 	return nil

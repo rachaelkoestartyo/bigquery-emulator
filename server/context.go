@@ -2,18 +2,20 @@ package server
 
 import (
 	"context"
+	"github.com/goccy/bigquery-emulator/internal/connection"
 
 	"github.com/goccy/bigquery-emulator/internal/metadata"
 )
 
 type (
-	serverKey  struct{}
-	projectKey struct{}
-	datasetKey struct{}
-	jobKey     struct{}
-	tableKey   struct{}
-	modelKey   struct{}
-	routineKey struct{}
+	serverKey     struct{}
+	projectKey    struct{}
+	datasetKey    struct{}
+	jobKey        struct{}
+	tableKey      struct{}
+	modelKey      struct{}
+	routineKey    struct{}
+	connectionKey struct{}
 )
 
 func withServer(ctx context.Context, server *Server) context.Context {
@@ -26,6 +28,14 @@ func serverFromContext(ctx context.Context) *Server {
 
 func withProject(ctx context.Context, project *metadata.Project) context.Context {
 	return context.WithValue(ctx, projectKey{}, project)
+}
+
+func connectionFromContext(ctx context.Context) *connection.ManagedConnection {
+	return ctx.Value(connectionKey{}).(*connection.ManagedConnection)
+}
+
+func withConnection(ctx context.Context, connection *connection.ManagedConnection) context.Context {
+	return context.WithValue(ctx, connectionKey{}, connection)
 }
 
 func projectFromContext(ctx context.Context) *metadata.Project {

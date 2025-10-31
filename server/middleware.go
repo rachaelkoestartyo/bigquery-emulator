@@ -2,7 +2,9 @@ package server
 
 import (
 	"compress/gzip"
+	"context"
 	"fmt"
+	connection2 "github.com/goccy/bigquery-emulator/internal/connection"
 	"net/http"
 	"runtime"
 	"sync"
@@ -162,6 +164,31 @@ func routineIDFromParams(params map[string]string) (string, bool) {
 	}
 	routineID, exists = params["routinesId"]
 	return routineID, exists
+}
+
+func withConnectionMiddleware() func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := r.Context()
+
+			server := serverFromContext(ctx)
+			err := server.connMgr.WithManagedConnection(ctx, func(ctx context.Context, conn *connection2.ManagedConnection) error {
+				ctx = withConnection(ctx, conn)
+
+				next.ServeHTTP(
+					w,
+					r.WithContext(ctx),
+				)
+				
+				return nil
+			})
+			if err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				fmt.Fprintln(w, err)
+				return
+			}
+		})
+	}
 }
 
 func withProjectMiddleware() func(http.Handler) http.Handler {

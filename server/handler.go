@@ -288,10 +288,7 @@ type uploadRequest struct {
 }
 
 func (h *uploadHandler) Handle(ctx context.Context, r *uploadRequest) (*metadata.Job, error) {
-	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, "")
-	if err != nil {
-		return nil, fmt.Errorf("failed to get connection: %w", err)
-	}
+	conn := connectionFromContext(ctx).ConfigureScope(r.project.ID, "")
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start transaction: %w", err)
@@ -549,10 +546,7 @@ func (h *uploadContentHandler) Handle(ctx context.Context, r *uploadContentReque
 		Columns: columns,
 		Data:    data,
 	}
-	conn, err := r.server.connMgr.Connection(ctx, tableRef.ProjectId, tableRef.DatasetId)
-	if err != nil {
-		return fmt.Errorf("failed to get connection: %w", err)
-	}
+	conn := connectionFromContext(ctx).ConfigureScope(tableRef.ProjectId, tableRef.DatasetId)
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return err
@@ -643,10 +637,7 @@ type datasetsDeleteRequest struct {
 }
 
 func (h *datasetsDeleteHandler) Handle(ctx context.Context, r *datasetsDeleteRequest) error {
-	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, r.dataset.ID)
-	if err != nil {
-		return fmt.Errorf("failed to get connection: %w", err)
-	}
+	conn := connectionFromContext(ctx).ConfigureScope(r.project.ID, r.dataset.ID)
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to start transaction: %w", err)
@@ -751,10 +742,7 @@ func (h *datasetsInsertHandler) Handle(ctx context.Context, r *datasetsInsertReq
 	if datasetID == "" {
 		return nil, fmt.Errorf("dataset id is empty")
 	}
-	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, datasetID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get connection: %w", err)
-	}
+	conn := connectionFromContext(ctx).ConfigureScope(r.project.ID, datasetID)
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start transaction: %w", err)
@@ -962,10 +950,7 @@ type jobsDeleteRequest struct {
 }
 
 func (h *jobsDeleteHandler) Handle(ctx context.Context, r *jobsDeleteRequest) error {
-	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, "")
-	if err != nil {
-		return fmt.Errorf("failed to get connection: %w", err)
-	}
+	conn := connectionFromContext(ctx).ConfigureScope(r.project.ID, "")
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to start transaction: %w", err)
@@ -1201,10 +1186,7 @@ func (h *jobsInsertHandler) importFromGCS(ctx context.Context, r *jobsInsertRequ
 		StartTime:    startTime.Unix(),
 		EndTime:      endTime.Unix(),
 	}
-	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, "")
-	if err != nil {
-		return nil, fmt.Errorf("failed to get connection: %w", err)
-	}
+	conn := connectionFromContext(ctx).ConfigureScope(r.project.ID, "")
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start transaction: %w", err)
@@ -1269,10 +1251,7 @@ func (h *jobsInsertHandler) exportToGCS(ctx context.Context, r *jobsInsertReques
 		return nil, err
 	}
 	startTime := time.Now()
-	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, "")
-	if err != nil {
-		return nil, fmt.Errorf("failed to get connection: %w", err)
-	}
+	conn := connectionFromContext(ctx).ConfigureScope(r.project.ID, "")
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start transaction: %w", err)
@@ -1453,10 +1432,7 @@ func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*
 		}
 		return nil, fmt.Errorf("unspecified job configuration query")
 	}
-	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, "")
-	if err != nil {
-		return nil, fmt.Errorf("failed to get connection: %w", err)
-	}
+	conn := connectionFromContext(ctx).ConfigureScope(r.project.ID, "")
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start transaction: %w", err)
@@ -1613,10 +1589,7 @@ func addTableMetadata(ctx context.Context, server *Server, spec *zetasqlite.Tabl
 		}
 		fields = append(fields, types.TableFieldSchemaFromZetaSQLType(column.Name, zetasqlType))
 	}
-	conn, err := server.connMgr.Connection(ctx, projectID, datasetID)
-	if err != nil {
-		return err
-	}
+	conn := connectionFromContext(ctx).ConfigureScope(projectID, datasetID)
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return err
@@ -1660,10 +1633,7 @@ func deleteTableMetadata(ctx context.Context, server *Server, spec *zetasqlite.T
 	if err != nil {
 		return err
 	}
-	conn, err := server.connMgr.Connection(ctx, projectID, datasetID)
-	if err != nil {
-		return err
-	}
+	conn := connectionFromContext(ctx).ConfigureScope(projectID, datasetID)
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return err
@@ -1801,10 +1771,7 @@ func (h *jobsQueryHandler) Handle(ctx context.Context, r *jobsQueryRequest) (*in
 	if r.queryRequest.DefaultDataset != nil {
 		datasetID = r.queryRequest.DefaultDataset.DatasetId
 	}
-	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, datasetID)
-	if err != nil {
-		return nil, err
-	}
+	conn := connectionFromContext(ctx).ConfigureScope(r.project.ID, datasetID)
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -1867,10 +1834,7 @@ type modelsDeleteRequest struct {
 }
 
 func (h *modelsDeleteHandler) Handle(ctx context.Context, r *modelsDeleteRequest) error {
-	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, r.dataset.ID)
-	if err != nil {
-		return err
-	}
+	conn := connectionFromContext(ctx).ConfigureScope(r.project.ID, r.dataset.ID)
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to start transaction: %w", err)
@@ -2150,10 +2114,7 @@ type routinesInsertRequest struct {
 }
 
 func (h *routinesInsertHandler) Handle(ctx context.Context, r *routinesInsertRequest) (*bigqueryv2.Routine, error) {
-	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, r.dataset.ID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get connection: %w", err)
-	}
+	conn := connectionFromContext(ctx).ConfigureScope(r.project.ID, r.dataset.ID)
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -2428,10 +2389,7 @@ func (h *tabledataInsertAllHandler) Handle(ctx context.Context, r *tabledataInse
 	if err != nil {
 		return nil, err
 	}
-	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, r.dataset.ID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get connection: %w", err)
-	}
+	conn := connectionFromContext(ctx).ConfigureScope(r.project.ID, r.dataset.ID)
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -2475,10 +2433,7 @@ type tabledataListRequest struct {
 }
 
 func (h *tabledataListHandler) Handle(ctx context.Context, r *tabledataListRequest) (*internaltypes.TableDataList, error) {
-	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, r.dataset.ID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get connection: %w", err)
-	}
+	conn := connectionFromContext(ctx).ConfigureScope(r.project.ID, r.dataset.ID)
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start transaction: %w", err)
@@ -2526,10 +2481,7 @@ type tablesDeleteRequest struct {
 }
 
 func (h *tablesDeleteHandler) Handle(ctx context.Context, r *tablesDeleteRequest) error {
-	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, r.dataset.ID)
-	if err != nil {
-		return err
-	}
+	conn := connectionFromContext(ctx).ConfigureScope(r.project.ID, r.dataset.ID)
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return err
@@ -2695,10 +2647,7 @@ func createTableMetadata(ctx context.Context, tx *connection.Tx, server *Server,
 }
 
 func (h *tablesInsertHandler) Handle(ctx context.Context, r *tablesInsertRequest) (*bigqueryv2.Table, *ServerError) {
-	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, r.dataset.ID)
-	if err != nil {
-		return nil, errInternalError(err.Error())
-	}
+	conn := connectionFromContext(ctx).ConfigureScope(r.project.ID, r.dataset.ID)
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return nil, errInternalError(err.Error())
@@ -2828,10 +2777,7 @@ type tablesPatchRequest struct {
 }
 
 func (h *tablesPatchHandler) Handle(ctx context.Context, r *tablesPatchRequest) (*bigqueryv2.Table, error) {
-	conn, err := r.server.connMgr.Connection(ctx, r.project.ID, r.dataset.ID)
-	if err != nil {
-		return nil, err
-	}
+	conn := connectionFromContext(ctx).ConfigureScope(r.project.ID, r.dataset.ID)
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return nil, err

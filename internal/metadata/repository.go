@@ -6,8 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/goccy/bigquery-emulator/internal"
-	"github.com/goccy/go-zetasqlite"
+	"github.com/goccy/bigquery-emulator/internal/connection"
 	bigqueryv2 "google.golang.org/api/bigquery/v2"
 	"modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
@@ -68,42 +67,41 @@ CREATE TABLE IF NOT EXISTS routines (
 }
 
 type Repository struct {
-	db      *sql.DB
-	queries *internal.PreparedStatementRepository
+	manager *connection.Manager
 }
 
 const (
-	StmtFindProject           internal.Statement = `SELECT id FROM projects WHERE id = @id`
-	StmtInsertProject         internal.Statement = `INSERT INTO projects (id) VALUES (@id)`
-	StmtDeleteProject         internal.Statement = `DELETE FROM projects WHERE id = @id`
-	StmtFindJobsInProject     internal.Statement = `SELECT id, projectID, metadata, result, error FROM jobs WHERE projectID = @projectid`
-	StmtDeleteTable           internal.Statement = `DELETE FROM tables WHERE projectID = @projectID AND datasetID = @datasetID AND id = @tableID`
-	StmtInsertTable           internal.Statement = `INSERT INTO tables (id, projectID, datasetID, metadata) VALUES (@id, @projectID, @datasetID, @metadata)`
-	StmtFindTable             internal.Statement = `SELECT id, metadata FROM tables WHERE projectID = @projectID AND datasetID = @datasetID AND id = @tableID`
-	StmtUpdateTable           internal.Statement = `UPDATE tables SET metadata = @metadata WHERE projectID = @projectID AND datasetID = @datasetID AND id = @id`
-	StmtTableExists           internal.Statement = `SELECT TRUE FROM tables WHERE projectID = @projectID AND datasetID = @datasetID AND id = @tableID`
-	StmtTablesExistInDataset  internal.Statement = `SELECT TRUE FROM tables WHERE projectID = @projectID AND datasetID = @datasetID LIMIT 1`
-	StmtFindTablesInDataset   internal.Statement = `SELECT id, datasetID, metadata FROM tables WHERE projectID = @projectID AND datasetID = @datasetID`
-	StmtFindModelsInDataset   internal.Statement = `SELECT id, datasetID, metadata FROM models WHERE projectID = @projectID AND datasetID = @datasetID`
-	StmtUpdateModel           internal.Statement = `UPDATE models SET metadata = @metadata WHERE projectID = @projectID AND datasetID = @datasetID AND id = @id`
-	StmtInsertModel           internal.Statement = `INSERT INTO models (id, projectID, datasetID, metadata) VALUES (@id, @projectID, @datasetID, @metadata)`
-	StmtDeleteModel           internal.Statement = `DELETE FROM models WHERE projectID = @projectID AND datasetID = @datasetID AND id = @id`
-	StmtFindRoutinesInDataset internal.Statement = `SELECT id, datasetID, metadata FROM routines WHERE projectID = @projectID AND datasetID = @datasetID`
-	StmtUpdateRoutine         internal.Statement = `UPDATE routines SET metadata = @metadata WHERE projectID = @projectID AND datasetID = @datasetID AND id = @id`
-	StmtInsertRoutine         internal.Statement = `INSERT INTO routines (id, projectID, datasetID, metadata) VALUES (@id, @projectID, @datasetID, @metadata)`
-	StmtDeleteRoutine         internal.Statement = `DELETE FROM routines WHERE projectID = @projectID AND datasetID = @datasetID AND id = @id`
-	StmtFindJob               internal.Statement = `SELECT id, metadata, result, error FROM jobs WHERE projectID = @projectID AND id = @jobID`
-	StmtInsertJob             internal.Statement = `INSERT INTO jobs (id, projectID, metadata, result, error) VALUES (@id, @projectID, @metadata, @result, @error)`
-	StmtUpdateJob             internal.Statement = `UPDATE jobs SET metadata = @metadata, result = @result, error = @error WHERE projectID = @projectID AND id = @id`
-	StmtDeleteJob             internal.Statement = `DELETE FROM jobs WHERE projectID = @projectID AND id = @jobID`
-	StmtFindDataset           internal.Statement = `SELECT id, projectID, metadata FROM datasets WHERE projectID = @projectID AND id = @datasetID`
-	StmtInsertDataset         internal.Statement = `INSERT INTO datasets (id, projectID, metadata) VALUES (@id, @projectID, @metadata)`
-	StmtDeleteDataset         internal.Statement = `DELETE FROM datasets WHERE projectID = @projectID AND id = @id`
-	StmtDatasetExists         internal.Statement = `SELECT TRUE FROM datasets WHERE projectID = @projectID AND id = @datasetID`
-	StmtUpdateDataset         internal.Statement = `UPDATE datasets SET metadata = @metadata WHERE projectID = @projectID AND id = @datasetID`
+	StmtFindProject           = `SELECT id FROM projects WHERE id = @id`
+	StmtInsertProject         = `INSERT INTO projects (id) VALUES (@id)`
+	StmtDeleteProject         = `DELETE FROM projects WHERE id = @id`
+	StmtFindJobsInProject     = `SELECT id, projectID, metadata, result, error FROM jobs WHERE projectID = @projectid`
+	StmtDeleteTable           = `DELETE FROM tables WHERE projectID = @projectID AND datasetID = @datasetID AND id = @id`
+	StmtInsertTable           = `INSERT INTO tables (id, projectID, datasetID, metadata) VALUES (@id, @projectID, @datasetID, @metadata)`
+	StmtFindTable             = `SELECT id, metadata FROM tables WHERE projectID = @projectID AND datasetID = @datasetID AND id = @tableID`
+	StmtUpdateTable           = `UPDATE tables SET metadata = @metadata WHERE projectID = @projectID AND datasetID = @datasetID AND id = @id`
+	StmtTableExists           = `SELECT TRUE FROM tables WHERE projectID = @projectID AND datasetID = @datasetID AND id = @tableID`
+	StmtTablesExistInDataset  = `SELECT TRUE FROM tables WHERE projectID = @projectID AND datasetID = @datasetID LIMIT 1`
+	StmtFindTablesInDataset   = `SELECT id, datasetID, metadata FROM tables WHERE projectID = @projectID AND datasetID = @datasetID`
+	StmtFindModelsInDataset   = `SELECT id, datasetID, metadata FROM models WHERE projectID = @projectID AND datasetID = @datasetID`
+	StmtUpdateModel           = `UPDATE models SET metadata = @metadata WHERE projectID = @projectID AND datasetID = @datasetID AND id = @id`
+	StmtInsertModel           = `INSERT INTO models (id, projectID, datasetID, metadata) VALUES (@id, @projectID, @datasetID, @metadata)`
+	StmtDeleteModel           = `DELETE FROM models WHERE projectID = @projectID AND datasetID = @datasetID AND id = @id`
+	StmtFindRoutinesInDataset = `SELECT id, datasetID, metadata FROM routines WHERE projectID = @projectID AND datasetID = @datasetID`
+	StmtUpdateRoutine         = `UPDATE routines SET metadata = @metadata WHERE projectID = @projectID AND datasetID = @datasetID AND id = @id`
+	StmtInsertRoutine         = `INSERT INTO routines (id, projectID, datasetID, metadata) VALUES (@id, @projectID, @datasetID, @metadata)`
+	StmtDeleteRoutine         = `DELETE FROM routines WHERE projectID = @projectID AND datasetID = @datasetID AND id = @id`
+	StmtFindJob               = `SELECT id, metadata, result, error FROM jobs WHERE projectID = @projectID AND id = @jobID`
+	StmtInsertJob             = `INSERT INTO jobs (id, projectID, metadata, result, error) VALUES (@id, @projectID, @metadata, @result, @error)`
+	StmtUpdateJob             = `UPDATE jobs SET metadata = @metadata, result = @result, error = @error WHERE projectID = @projectID AND id = @id`
+	StmtDeleteJob             = `DELETE FROM jobs WHERE projectID = @projectID AND id = @jobID`
+	StmtFindDataset           = `SELECT id, projectID, metadata FROM datasets WHERE projectID = @projectID AND id = @datasetID`
+	StmtInsertDataset         = `INSERT INTO datasets (id, projectID, metadata) VALUES (@id, @projectID, @metadata)`
+	StmtDeleteDataset         = `DELETE FROM datasets WHERE projectID = @projectID AND id = @id`
+	StmtDatasetExists         = `SELECT TRUE FROM datasets WHERE projectID = @projectID AND id = @datasetID`
+	StmtUpdateDataset         = `UPDATE datasets SET metadata = @metadata WHERE projectID = @projectID AND id = @datasetID`
 )
 
-var preparedStatements = []internal.Statement{
+var preparedStatements = []string{
 	StmtFindProject,
 	StmtInsertProject,
 	StmtDeleteProject,
@@ -128,53 +126,31 @@ var preparedStatements = []internal.Statement{
 	StmtUpdateDataset,
 }
 
-func NewRepository(db *sql.DB) (*Repository, error) {
-	tx, err := db.Begin()
-	if err != nil {
-		return nil, err
-	}
-	for _, ddl := range schemata {
-		if _, err := tx.ExecContext(context.Background(), ddl); err != nil {
-			rollbackErr := tx.Rollback()
-			if rollbackErr != nil {
-				return nil, rollbackErr
+func NewRepository(db *sql.DB, manager *connection.Manager) (*Repository, error) {
+	err := manager.ExecuteWithTransaction(context.Background(), func(ctx context.Context, tx *connection.Tx) error {
+		for _, ddl := range schemata {
+			if _, err := tx.Tx().ExecContext(ctx, ddl); err != nil {
+				rollbackErr := tx.Tx().Rollback()
+				if rollbackErr != nil {
+					return rollbackErr
+				}
+				return err
 			}
-			return nil, err
 		}
-	}
-	err = tx.Commit()
-	if err != nil {
-		return nil, err
-	}
-	preparedQueryRepository := internal.NewPreparedStatementRepository(
-		db,
-		preparedStatements,
-	)
-	if err != nil {
-		return nil, err
-	}
-	return &Repository{
-		db:      db,
-		queries: preparedQueryRepository,
-	}, nil
-}
-
-func (r *Repository) getConnection(ctx context.Context) (*sql.Conn, error) {
-	conn, err := r.db.Conn(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get connection: %w", err)
-	}
-	if err := conn.Raw(func(c interface{}) error {
-		zetasqliteConn, ok := c.(*zetasqlite.ZetaSQLiteConn)
-		if !ok {
-			return fmt.Errorf("failed to get ZetaSQLiteConn from %T", c)
-		}
-		zetasqliteConn.SetNamePath([]string{})
 		return nil
-	}); err != nil {
-		return nil, fmt.Errorf("failed to setup connection: %w", err)
+	})
+
+	if err != nil {
+		return nil, err
 	}
-	return conn, nil
+
+	if err := manager.PrepareQueries(preparedStatements); err != nil {
+		return nil, err
+	}
+
+	return &Repository{
+		manager: manager,
+	}, nil
 }
 
 func (r *Repository) ProjectFromData(data *types.Project) (*Project, []*Dataset, []*Job) {
@@ -237,21 +213,13 @@ func (r *Repository) FindProjectWithConn(ctx context.Context, tx *sql.Tx, id str
 }
 
 func (r *Repository) FindProject(ctx context.Context, id string) (*Project, error) {
-	conn, err := r.getConnection(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer conn.Close()
-	tx, err := conn.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Commit()
-	return r.FindProjectWithConn(ctx, tx, id)
+	return connection.ExecuteWithTransaction(r.manager, ctx, func(ctx context.Context, tx *sql.Tx) (*Project, error) {
+		return r.FindProjectWithConn(ctx, tx, id)
+	})
 }
 
 func (r *Repository) findProjects(ctx context.Context, tx *sql.Tx, ids []string) ([]*Project, error) {
-	stmt, err := r.queries.Get(ctx, tx, StmtFindProject)
+	stmt, err := r.manager.GetStatement(ctx, tx, StmtFindProject)
 	if err != nil {
 		return nil, err
 	}
@@ -279,40 +247,31 @@ func (r *Repository) findProjects(ctx context.Context, tx *sql.Tx, ids []string)
 }
 
 func (r *Repository) FindAllProjects(ctx context.Context) ([]*Project, error) {
-	conn, err := r.getConnection(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer conn.Close()
-
-	tx, err := conn.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Commit()
-	rows, err := tx.QueryContext(ctx, "SELECT id FROM projects")
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	projectIDs := []string{}
-	for rows.Next() {
-		var (
-			projectID string
-		)
-		if err := rows.Scan(&projectID); err != nil {
+	return connection.ExecuteWithTransaction(r.manager, ctx, func(ctx context.Context, tx *sql.Tx) ([]*Project, error) {
+		rows, err := tx.QueryContext(ctx, "SELECT id FROM projects")
+		if err != nil {
 			return nil, err
 		}
-		projectIDs = append(projectIDs, projectID)
-	}
+		defer rows.Close()
 
-	projects := []*Project{}
-	for _, projectID := range projectIDs {
-		projects = append(projects, NewProject(r, projectID))
-	}
+		projectIDs := []string{}
+		for rows.Next() {
+			var (
+				projectID string
+			)
+			if err := rows.Scan(&projectID); err != nil {
+				return nil, err
+			}
+			projectIDs = append(projectIDs, projectID)
+		}
 
-	return projects, nil
+		projects := []*Project{}
+		for _, projectID := range projectIDs {
+			projects = append(projects, NewProject(r, projectID))
+		}
+
+		return projects, nil
+	})
 }
 
 func (r *Repository) AddProjectIfNotExists(ctx context.Context, tx *sql.Tx, project *Project) error {
@@ -327,58 +286,36 @@ func (r *Repository) AddProjectIfNotExists(ctx context.Context, tx *sql.Tx, proj
 }
 
 func (r *Repository) AddProject(ctx context.Context, tx *sql.Tx, project *Project) error {
-	stmt, err := r.queries.Get(ctx, tx, StmtInsertProject)
-	if err != nil {
-		return err
-	}
-	if _, err := stmt.ExecContext(
-		ctx,
-		sql.Named("id", project.ID),
-	); err != nil {
-		return err
-	}
-	return nil
+	return r.ExecuteStatement(ctx, tx, StmtInsertProject, map[string]any{
+		"id": project.ID,
+	})
 }
 
 func (r *Repository) DeleteProject(ctx context.Context, tx *sql.Tx, project *Project) error {
-	stmt, err := r.queries.Get(ctx, tx, StmtDeleteProject)
-	if err != nil {
-		return err
-	}
-
-	if _, err := stmt.ExecContext(ctx, sql.Named("id", project.ID)); err != nil {
-		return err
-	}
-	return nil
+	return r.ExecuteStatement(ctx, tx, StmtDeleteProject, map[string]any{
+		"id": project.ID,
+	})
 }
 
 func (r *Repository) FindJob(ctx context.Context, projectID, jobID string) (*Job, error) {
-	conn, err := r.getConnection(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer conn.Close()
-	tx, err := conn.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Commit()
-	jobs, err := r.findJobs(ctx, tx, projectID, []string{jobID})
-	if err != nil {
-		return nil, err
-	}
-	if len(jobs) != 1 {
-		return nil, nil
-	}
-	if jobs[0].ID != jobID {
-		return nil, nil
-	}
-	return jobs[0], nil
+	return connection.ExecuteWithTransaction(r.manager, ctx, func(ctx context.Context, tx *sql.Tx) (*Job, error) {
+		jobs, err := r.findJobs(ctx, tx, projectID, []string{jobID})
+		if err != nil {
+			return nil, err
+		}
+		if len(jobs) != 1 {
+			return nil, nil
+		}
+		if jobs[0].ID != jobID {
+			return nil, nil
+		}
+		return jobs[0], nil
+	})
 }
 
 func (r *Repository) findJobs(ctx context.Context, tx *sql.Tx, projectID string, jobIDs []string) ([]*Job, error) {
 	jobs := []*Job{}
-	stmt, err := r.queries.Get(ctx, tx, StmtFindJob)
+	stmt, err := r.manager.GetStatement(ctx, tx, StmtFindJob)
 	if err != nil {
 		return nil, err
 	}
@@ -429,63 +366,54 @@ func (r *Repository) findJobs(ctx context.Context, tx *sql.Tx, projectID string,
 }
 
 func (r *Repository) FindJobsInProject(ctx context.Context, pID string) ([]*Job, error) {
-	conn, err := r.getConnection(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer conn.Close()
-	tx, err := conn.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Commit()
-
-	stmt, err := r.queries.Get(ctx, tx, StmtFindJobsInProject)
-	if err != nil {
-		return nil, err
-	}
-	rows, err := stmt.QueryContext(
-		ctx,
-		sql.Named("projectID", pID),
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	jobs := []*Job{}
-	for rows.Next() {
-		var (
-			jobID     string
-			projectID string
-			metadata  string
-			result    string
-			jobErr    string
-		)
-		if err := rows.Scan(&jobID, &projectID, &metadata, &result, &jobErr); err != nil {
+	return connection.ExecuteWithTransaction(r.manager, ctx, func(ctx context.Context, tx *sql.Tx) ([]*Job, error) {
+		stmt, err := r.manager.GetStatement(ctx, tx, StmtFindJobsInProject)
+		if err != nil {
 			return nil, err
 		}
-		var content bigqueryv2.Job
-		if len(metadata) > 0 {
-			if err := json.Unmarshal([]byte(metadata), &content); err != nil {
-				return nil, fmt.Errorf("failed to decode metadata content %s: %w", metadata, err)
-			}
-		}
-		var response internaltypes.QueryResponse
-		if len(result) > 0 {
-			if err := json.Unmarshal([]byte(result), &response); err != nil {
-				return nil, fmt.Errorf("failed to decode job response %s: %w", result, err)
-			}
-		}
-		var resErr error
-		if jobErr != "" {
-			resErr = errors.New(jobErr)
-		}
-		jobs = append(
-			jobs,
-			NewJob(r, projectID, jobID, &content, &response, resErr),
+		rows, err := stmt.QueryContext(
+			ctx,
+			sql.Named("projectID", pID),
 		)
-	}
-	return jobs, nil
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		jobs := []*Job{}
+		for rows.Next() {
+			var (
+				jobID     string
+				projectID string
+				metadata  string
+				result    string
+				jobErr    string
+			)
+			if err := rows.Scan(&jobID, &projectID, &metadata, &result, &jobErr); err != nil {
+				return nil, err
+			}
+			var content bigqueryv2.Job
+			if len(metadata) > 0 {
+				if err := json.Unmarshal([]byte(metadata), &content); err != nil {
+					return nil, fmt.Errorf("failed to decode metadata content %s: %w", metadata, err)
+				}
+			}
+			var response internaltypes.QueryResponse
+			if len(result) > 0 {
+				if err := json.Unmarshal([]byte(result), &response); err != nil {
+					return nil, fmt.Errorf("failed to decode job response %s: %w", result, err)
+				}
+			}
+			var resErr error
+			if jobErr != "" {
+				resErr = errors.New(jobErr)
+			}
+			jobs = append(
+				jobs,
+				NewJob(r, projectID, jobID, &content, &response, resErr),
+			)
+		}
+		return jobs, nil
+	})
 }
 
 func (r *Repository) AddJob(ctx context.Context, tx *sql.Tx, job *Job) error {
@@ -501,22 +429,13 @@ func (r *Repository) AddJob(ctx context.Context, tx *sql.Tx, job *Job) error {
 	if job.err != nil {
 		jobErr = job.err.Error()
 	}
-	stmt, err := r.queries.Get(ctx, tx, StmtInsertJob)
-	if err != nil {
-		return err
-	}
-
-	if _, err := stmt.ExecContext(
-		ctx,
-		sql.Named("id", job.ID),
-		sql.Named("projectID", job.ProjectID),
-		sql.Named("metadata", string(metadata)),
-		sql.Named("result", string(result)),
-		sql.Named("error", jobErr),
-	); err != nil {
-		return err
-	}
-	return nil
+	return r.ExecuteStatement(ctx, tx, StmtInsertJob, map[string]any{
+		"id":        job.ID,
+		"projectID": job.ProjectID,
+		"metadata":  string(metadata),
+		"result":    string(result),
+		"error":     jobErr,
+	})
 }
 
 func (r *Repository) UpdateJob(ctx context.Context, tx *sql.Tx, job *Job) error {
@@ -532,84 +451,59 @@ func (r *Repository) UpdateJob(ctx context.Context, tx *sql.Tx, job *Job) error 
 	if job.err != nil {
 		jobErr = job.err.Error()
 	}
-	stmt, err := r.queries.Get(ctx, tx, StmtUpdateJob)
-	if err != nil {
-		return err
-	}
-	if _, err := stmt.ExecContext(
-		ctx,
-		sql.Named("id", job.ID),
-		sql.Named("projectID", job.ProjectID),
-		sql.Named("metadata", string(metadata)),
-		sql.Named("result", string(result)),
-		sql.Named("error", jobErr),
-	); err != nil {
-		return err
-	}
-	return nil
+	return r.ExecuteStatement(ctx, tx, StmtUpdateJob, map[string]any{
+		"id":        job.ID,
+		"projectID": job.ProjectID,
+		"metadata":  string(metadata),
+		"result":    string(result),
+		"error":     jobErr,
+	})
 }
 
 func (r *Repository) DeleteJob(ctx context.Context, tx *sql.Tx, job *Job) error {
-	stmt, err := r.queries.Get(ctx, tx, StmtDeleteJob)
-	if err != nil {
-		return err
-	}
-	if _, err := stmt.ExecContext(
-		ctx,
-		sql.Named("projectID", job.ProjectID),
-		sql.Named("jobID", job.ID),
-	); err != nil {
-		return err
-	}
-	return nil
+	return r.ExecuteStatement(ctx, tx, StmtDeleteJob, map[string]any{
+		"projectID": job.ProjectID,
+		"jobID":     job.ID,
+	})
 }
 
 func (r *Repository) FindDatasetsInProject(ctx context.Context, projectID string) ([]*Dataset, error) {
-	conn, err := r.getConnection(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer conn.Close()
-	tx, err := conn.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Commit()
-
-	rows, err := tx.QueryContext(ctx,
-		"SELECT id, metadata FROM datasets WHERE projectID = @projectID",
-		sql.Named("projectID", projectID),
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	datasets := []*Dataset{}
-	for rows.Next() {
-		var (
-			datasetID string
-			metadata  string
+	return connection.ExecuteWithTransaction(r.manager, ctx, func(ctx context.Context, tx *sql.Tx) ([]*Dataset, error) {
+		rows, err := tx.QueryContext(ctx,
+			"SELECT id, metadata FROM datasets WHERE projectID = @projectID",
+			sql.Named("projectID", projectID),
 		)
-		if err := rows.Scan(&datasetID, &metadata); err != nil {
+		if err != nil {
 			return nil, err
 		}
-		var content bigqueryv2.Dataset
-		if err := json.Unmarshal([]byte(metadata), &content); err != nil {
-			return nil, err
+		defer rows.Close()
+
+		datasets := []*Dataset{}
+		for rows.Next() {
+			var (
+				datasetID string
+				metadata  string
+			)
+			if err := rows.Scan(&datasetID, &metadata); err != nil {
+				return nil, err
+			}
+			var content bigqueryv2.Dataset
+			if err := json.Unmarshal([]byte(metadata), &content); err != nil {
+				return nil, err
+			}
+			datasets = append(
+				datasets,
+				NewDataset(r, projectID, datasetID, &content),
+			)
 		}
-		datasets = append(
-			datasets,
-			NewDataset(r, projectID, datasetID, &content),
-		)
-	}
-	return datasets, nil
+		return datasets, nil
+	})
 }
 
 func (r *Repository) TableExists(ctx context.Context, tx *sql.Tx, projectID, datasetID, tableID string) (bool, error) {
 	var exists bool
 
-	stmt, err := r.queries.Get(ctx, tx, StmtTableExists)
+	stmt, err := r.manager.GetStatement(ctx, tx, StmtTableExists)
 	if err != nil {
 		return false, err
 	}
@@ -629,17 +523,9 @@ func (r *Repository) TableExists(ctx context.Context, tx *sql.Tx, projectID, dat
 }
 
 func (r *Repository) FindDataset(ctx context.Context, projectID, datasetID string) (*Dataset, error) {
-	conn, err := r.getConnection(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer conn.Close()
-	tx, err := conn.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Commit()
-	return r.FindDatasetWithConnection(ctx, tx, projectID, datasetID)
+	return connection.ExecuteWithTransaction(r.manager, ctx, func(ctx context.Context, tx *sql.Tx) (*Dataset, error) {
+		return r.FindDatasetWithConnection(ctx, tx, projectID, datasetID)
+	})
 }
 
 func (r *Repository) FindDatasetWithConnection(ctx context.Context, tx *sql.Tx, projectID string, datasetID string) (*Dataset, error) {
@@ -658,7 +544,7 @@ func (r *Repository) FindDatasetWithConnection(ctx context.Context, tx *sql.Tx, 
 
 func (r *Repository) findDatasets(ctx context.Context, tx *sql.Tx, projectID string, datasetIDs []string) ([]*Dataset, error) {
 	datasets := []*Dataset{}
-	stmt, err := r.queries.Get(ctx, tx, StmtFindDataset)
+	stmt, err := r.manager.GetStatement(ctx, tx, StmtFindDataset)
 	if err != nil {
 		return nil, err
 	}
@@ -697,15 +583,14 @@ func (r *Repository) AddDataset(ctx context.Context, tx *sql.Tx, dataset *Datase
 	if err != nil {
 		return err
 	}
-	stmt, err := r.queries.Get(ctx, tx, StmtInsertDataset)
+
+	err = r.ExecuteStatement(ctx, tx, StmtInsertDataset, map[string]any{
+		"id":        dataset.ID,
+		"projectID": dataset.ProjectID,
+		"metadata":  string(metadata),
+	})
+
 	if err != nil {
-		return err
-	}
-	if _, err := stmt.ExecContext(ctx,
-		sql.Named("id", dataset.ID),
-		sql.Named("projectID", dataset.ProjectID),
-		sql.Named("metadata", string(metadata)),
-	); err != nil {
 		var sqliteError *sqlite.Error
 		if errors.As(errors.Unwrap(err), &sqliteError) {
 			if sqliteError.Code() == sqlite3.SQLITE_CONSTRAINT_PRIMARYKEY {
@@ -714,6 +599,7 @@ func (r *Repository) AddDataset(ctx context.Context, tx *sql.Tx, dataset *Datase
 		}
 		return err
 	}
+
 	return nil
 }
 
@@ -722,23 +608,15 @@ func (r *Repository) UpdateDataset(ctx context.Context, tx *sql.Tx, dataset *Dat
 	if err != nil {
 		return err
 	}
-	stmt, err := r.queries.Get(ctx, tx, StmtUpdateDataset)
-	if err != nil {
-		return err
-	}
-	if _, err := stmt.ExecContext(
-		ctx,
-		sql.Named("datasetID", dataset.ID),
-		sql.Named("projectID", dataset.ProjectID),
-		sql.Named("metadata", string(metadata)),
-	); err != nil {
-		return err
-	}
-	return nil
+	return r.ExecuteStatement(ctx, tx, StmtUpdateDataset, map[string]any{
+		"datasetID": dataset.ID,
+		"projectID": dataset.ProjectID,
+		"metadata":  string(metadata),
+	})
 }
 
 func (r *Repository) TablesExistInDataset(ctx context.Context, tx *sql.Tx, dataset *Dataset) (bool, error) {
-	stmt, err := r.queries.Get(ctx, tx, StmtTablesExistInDataset)
+	stmt, err := r.manager.GetStatement(ctx, tx, StmtTablesExistInDataset)
 	if err != nil {
 		return false, err
 	}
@@ -766,7 +644,7 @@ func (r *Repository) DeleteDataset(ctx context.Context, tx *sql.Tx, dataset *Dat
 	if inUse && !inUseOk {
 		return fmt.Errorf("dataset %s: %w", dataset.ID, ErrDatasetInUse)
 	}
-	stmt, err := r.queries.Get(ctx, tx, StmtDeleteDataset)
+	stmt, err := r.manager.GetStatement(ctx, tx, StmtDeleteDataset)
 	if err != nil {
 		return err
 	}
@@ -781,17 +659,9 @@ func (r *Repository) DeleteDataset(ctx context.Context, tx *sql.Tx, dataset *Dat
 }
 
 func (r *Repository) FindTable(ctx context.Context, projectID, datasetID, tableID string) (*Table, error) {
-	conn, err := r.getConnection(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer conn.Close()
-	tx, err := conn.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Commit()
-	return r.FindTableWithConnection(ctx, tx, projectID, datasetID, tableID)
+	return connection.ExecuteWithTransaction(r.manager, ctx, func(ctx context.Context, tx *sql.Tx) (*Table, error) {
+		return r.FindTableWithConnection(ctx, tx, projectID, datasetID, tableID)
+	})
 }
 
 func (r *Repository) FindTableWithConnection(ctx context.Context, tx *sql.Tx, projectID, datasetID, tableID string) (*Table, error) {
@@ -809,17 +679,9 @@ func (r *Repository) FindTableWithConnection(ctx context.Context, tx *sql.Tx, pr
 }
 
 func (r *Repository) FindTablesInDatasets(ctx context.Context, projectID, datasetID string) ([]*Table, error) {
-	conn, err := r.getConnection(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer conn.Close()
-	tx, err := conn.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Commit()
-	return r.FindTablesInDatasetsWithConnection(ctx, tx, projectID, datasetID)
+	return connection.ExecuteWithTransaction(r.manager, ctx, func(ctx context.Context, tx *sql.Tx) ([]*Table, error) {
+		return r.FindTablesInDatasetsWithConnection(ctx, tx, projectID, datasetID)
+	})
 }
 
 func (r *Repository) FindTablesInDatasetsWithConnection(ctx context.Context, tx *sql.Tx, projectID, datasetID string) ([]*Table, error) {
@@ -841,7 +703,7 @@ func (r *Repository) findTablesInDatasets(ctx context.Context, tx *sql.Tx, proje
 		tables[datasetID] = []*Table{}
 	}
 	for _, datasetID := range datasetIDs {
-		stmt, err := r.queries.Get(ctx, tx, StmtFindTablesInDataset)
+		stmt, err := r.manager.GetStatement(ctx, tx, StmtFindTablesInDataset)
 		if err != nil {
 			return nil, err
 		}
@@ -889,7 +751,7 @@ func (r *Repository) findTablesInDatasets(ctx context.Context, tx *sql.Tx, proje
 func (r *Repository) findTables(ctx context.Context, tx *sql.Tx, projectID, datasetID string, tableIDs []string) ([]*Table, error) {
 	tables := []*Table{}
 
-	stmt, err := r.queries.Get(ctx, tx, StmtFindTable)
+	stmt, err := r.manager.GetStatement(ctx, tx, StmtFindTable)
 	if err != nil {
 		return nil, err
 	}
@@ -930,86 +792,53 @@ func (r *Repository) AddTable(ctx context.Context, tx *sql.Tx, table *Table) err
 	if err != nil {
 		return err
 	}
-	stmt, err := r.queries.Get(ctx, tx, StmtInsertTable)
-	if err != nil {
-		return err
-	}
-	if _, err := stmt.ExecContext(
-		ctx,
-		sql.Named("id", table.ID),
-		sql.Named("projectID", table.ProjectID),
-		sql.Named("datasetID", table.DatasetID),
-		sql.Named("metadata", string(metadata)),
-	); err != nil {
-		return err
-	}
-	return nil
+	return r.ExecuteStatement(ctx, tx, StmtInsertTable, map[string]any{
+		"projectID": table.ProjectID,
+		"datasetID": table.DatasetID,
+		"id":        table.ID,
+		"metadata":  string(metadata),
+	})
 }
 
 func (r *Repository) UpdateTable(ctx context.Context, tx *sql.Tx, table *Table, metadata map[string]interface{}) error {
 	marshalledMetadata, err := json.Marshal(metadata)
-
 	if err != nil {
 		return err
 	}
-	stmt, err := r.queries.Get(ctx, tx, StmtUpdateTable)
-	if err != nil {
-		return err
-	}
-	if _, err := stmt.ExecContext(
-		ctx,
-		sql.Named("id", table.ID),
-		sql.Named("projectID", table.ProjectID),
-		sql.Named("datasetID", table.DatasetID),
-		sql.Named("metadata", string(marshalledMetadata)),
-	); err != nil {
-		return err
-	}
-	return nil
+	return r.ExecuteStatement(ctx, tx, StmtUpdateTable, map[string]any{
+		"projectID": table.ProjectID,
+		"datasetID": table.DatasetID,
+		"id":        table.ID,
+		"metadata":  string(marshalledMetadata),
+	})
 }
 
 func (r *Repository) DeleteTable(ctx context.Context, tx *sql.Tx, table *Table) error {
-	stmt, err := r.queries.Get(ctx, tx, StmtDeleteTable)
-	if err != nil {
-		return err
-	}
-	if _, err := stmt.ExecContext(
-		ctx,
-		sql.Named("projectID", table.ProjectID),
-		sql.Named("datasetID", table.DatasetID),
-		sql.Named("tableID", table.ID),
-	); err != nil {
-		return err
-	}
-	return nil
+	return r.ExecuteStatement(ctx, tx, StmtDeleteTable, map[string]any{
+		"projectID": table.ProjectID,
+		"datasetID": table.DatasetID,
+		"id":        table.ID,
+	})
 }
 
 func (r *Repository) FindModelsInDataset(ctx context.Context, projectID, datasetID string) ([]*Model, error) {
-	conn, err := r.getConnection(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer conn.Close()
-	tx, err := conn.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Commit()
-	modelsByDataset, err := r.findModelsInDatasets(ctx, tx, projectID, []string{datasetID})
-	if err != nil {
-		return nil, err
-	}
-	models, exists := modelsByDataset[datasetID]
-	if !exists {
-		return nil, fmt.Errorf("could not find any models in dataset [%s]", datasetID)
-	}
-	return models, nil
+	return connection.ExecuteWithTransaction(r.manager, ctx, func(ctx context.Context, tx *sql.Tx) ([]*Model, error) {
+		modelsByDataset, err := r.findModelsInDatasets(ctx, tx, projectID, []string{datasetID})
+		if err != nil {
+			return nil, err
+		}
+		models, exists := modelsByDataset[datasetID]
+		if !exists {
+			return nil, fmt.Errorf("could not find any models in dataset [%s]", datasetID)
+		}
+		return models, nil
+	})
 }
 
 func (r *Repository) findModelsInDatasets(ctx context.Context, tx *sql.Tx, projectID string, datasetIDs []string) (map[string][]*Model, error) {
 	models := map[string][]*Model{}
 
-	stmt, err := r.queries.Get(ctx, tx, StmtFindModelsInDataset)
+	stmt, err := r.manager.GetStatement(ctx, tx, StmtFindModelsInDataset)
 	if err != nil {
 		return nil, err
 	}
@@ -1056,27 +885,19 @@ func (r *Repository) findModelsInDatasets(ctx context.Context, tx *sql.Tx, proje
 }
 
 func (r *Repository) FindModel(ctx context.Context, projectID, datasetID, modelID string) (*Model, error) {
-	conn, err := r.getConnection(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer conn.Close()
-	tx, err := conn.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Commit()
-	models, err := r.findModels(ctx, tx, projectID, datasetID, []string{modelID})
-	if err != nil {
-		return nil, err
-	}
-	if len(models) != 1 {
-		return nil, nil
-	}
-	if models[0].ID != modelID {
-		return nil, nil
-	}
-	return models[0], nil
+	return connection.ExecuteWithTransaction(r.manager, ctx, func(ctx context.Context, tx *sql.Tx) (*Model, error) {
+		models, err := r.findModels(ctx, tx, projectID, datasetID, []string{modelID})
+		if err != nil {
+			return nil, err
+		}
+		if len(models) != 1 {
+			return nil, nil
+		}
+		if models[0].ID != modelID {
+			return nil, nil
+		}
+		return models[0], nil
+	})
 }
 
 func (r *Repository) findModels(ctx context.Context, tx *sql.Tx, projectID, datasetID string, modelIDs []string) ([]*Model, error) {
@@ -1114,31 +935,23 @@ func (r *Repository) findModels(ctx context.Context, tx *sql.Tx, projectID, data
 }
 
 func (r *Repository) FindRoutinesInDataset(ctx context.Context, projectID, datasetID string) ([]*Routine, error) {
-	conn, err := r.getConnection(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer conn.Close()
-	tx, err := conn.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Commit()
-	routinesByDataset, err := r.findRoutinesInDatasets(ctx, tx, projectID, []string{datasetID})
-	if err != nil {
-		return nil, err
-	}
-	routines, exists := routinesByDataset[datasetID]
-	if !exists {
-		return nil, fmt.Errorf("could not find any routines in dataset [%s]", datasetID)
-	}
-	return routines, nil
+	return connection.ExecuteWithTransaction(r.manager, ctx, func(ctx context.Context, tx *sql.Tx) ([]*Routine, error) {
+		routinesByDataset, err := r.findRoutinesInDatasets(ctx, tx, projectID, []string{datasetID})
+		if err != nil {
+			return nil, err
+		}
+		routines, exists := routinesByDataset[datasetID]
+		if !exists {
+			return nil, fmt.Errorf("could not find any routines in dataset [%s]", datasetID)
+		}
+		return routines, nil
+	})
 }
 
 func (r *Repository) findRoutinesInDatasets(ctx context.Context, tx *sql.Tx, projectID string, datasetIDs []string) (map[string][]*Routine, error) {
 	routines := map[string][]*Routine{}
 
-	stmt, err := r.queries.Get(ctx, tx, StmtFindRoutinesInDataset)
+	stmt, err := r.manager.GetStatement(ctx, tx, StmtFindRoutinesInDataset)
 	if err != nil {
 		return nil, err
 	}
@@ -1188,21 +1001,12 @@ func (r *Repository) AddModel(ctx context.Context, tx *sql.Tx, model *Model) err
 	if err != nil {
 		return err
 	}
-
-	stmt, err := r.queries.Get(ctx, tx, StmtInsertModel)
-	if err != nil {
-		return err
-	}
-	if _, err := stmt.ExecContext(
-		ctx,
-		sql.Named("id", model.ID),
-		sql.Named("projectID", model.ProjectID),
-		sql.Named("datasetID", model.DatasetID),
-		sql.Named("metadata", string(metadata)),
-	); err != nil {
-		return err
-	}
-	return nil
+	return r.ExecuteStatement(ctx, tx, StmtInsertModel, map[string]any{
+		"projectID": model.ProjectID,
+		"datasetID": model.DatasetID,
+		"id":        model.ID,
+		"metadata":  string(metadata),
+	})
 }
 
 func (r *Repository) UpdateModel(ctx context.Context, tx *sql.Tx, model *Model) error {
@@ -1210,62 +1014,36 @@ func (r *Repository) UpdateModel(ctx context.Context, tx *sql.Tx, model *Model) 
 	if err != nil {
 		return err
 	}
-
-	stmt, err := r.queries.Get(ctx, tx, StmtUpdateModel)
-	if err != nil {
-		return err
-	}
-	if _, err := stmt.ExecContext(
-		ctx,
-		sql.Named("id", model.ID),
-		sql.Named("projectID", model.ProjectID),
-		sql.Named("datasetID", model.DatasetID),
-		sql.Named("metadata", string(metadata)),
-	); err != nil {
-		return err
-	}
-	return nil
+	return r.ExecuteStatement(ctx, tx, StmtUpdateModel, map[string]any{
+		"projectID": model.ProjectID,
+		"datasetID": model.DatasetID,
+		"id":        model.ID,
+		"metadata":  string(metadata),
+	})
 }
 
 func (r *Repository) DeleteModel(ctx context.Context, tx *sql.Tx, model *Model) error {
-	stmt, err := r.queries.Get(ctx, tx, StmtDeleteModel)
-	if err != nil {
-		return err
-	}
-	if _, err := stmt.ExecContext(
-		ctx,
-		sql.Named("projectID", model.ProjectID),
-		sql.Named("datasetID", model.DatasetID),
-		sql.Named("id", model.ID),
-	); err != nil {
-		return err
-	}
-	return nil
+	return r.ExecuteStatement(ctx, tx, StmtDeleteModel, map[string]any{
+		"projectID": model.ProjectID,
+		"datasetID": model.DatasetID,
+		"id":        model.ID,
+	})
 }
 
 func (r *Repository) FindRoutine(ctx context.Context, projectID, datasetID, routineID string) (*Routine, error) {
-	conn, err := r.getConnection(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer conn.Close()
-	tx, err := conn.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Commit()
-
-	routines, err := r.findRoutines(ctx, tx, projectID, datasetID, []string{routineID})
-	if err != nil {
-		return nil, err
-	}
-	if len(routines) != 1 {
-		return nil, nil
-	}
-	if routines[0].ID != routineID {
-		return nil, nil
-	}
-	return routines[0], nil
+	return connection.ExecuteWithTransaction(r.manager, ctx, func(ctx context.Context, tx *sql.Tx) (*Routine, error) {
+		routines, err := r.findRoutines(ctx, tx, projectID, datasetID, []string{routineID})
+		if err != nil {
+			return nil, err
+		}
+		if len(routines) != 1 {
+			return nil, nil
+		}
+		if routines[0].ID != routineID {
+			return nil, nil
+		}
+		return routines[0], nil
+	})
 }
 
 func (r *Repository) findRoutines(ctx context.Context, tx *sql.Tx, projectID, datasetID string, routineIDs []string) ([]*Routine, error) {
@@ -1307,17 +1085,12 @@ func (r *Repository) AddRoutine(ctx context.Context, tx *sql.Tx, routine *Routin
 	if err != nil {
 		return err
 	}
-	stmt, err := r.queries.Get(ctx, tx, StmtInsertRoutine)
-	if _, err := stmt.ExecContext(
-		ctx,
-		sql.Named("id", routine.ID),
-		sql.Named("projectID", routine.ProjectID),
-		sql.Named("datasetID", routine.DatasetID),
-		sql.Named("metadata", string(metadata)),
-	); err != nil {
-		return err
-	}
-	return nil
+	return r.ExecuteStatement(ctx, tx, StmtInsertRoutine, map[string]any{
+		"projectID": routine.ProjectID,
+		"datasetID": routine.DatasetID,
+		"id":        routine.ID,
+		"metadata":  string(metadata),
+	})
 }
 
 func (r *Repository) UpdateRoutine(ctx context.Context, tx *sql.Tx, routine *Routine) error {
@@ -1325,42 +1098,33 @@ func (r *Repository) UpdateRoutine(ctx context.Context, tx *sql.Tx, routine *Rou
 	if err != nil {
 		return err
 	}
-	stmt, err := r.queries.Get(ctx, tx, StmtUpdateRoutine)
-	if err != nil {
-		return err
-	}
-	if _, err := stmt.ExecContext(
-		ctx,
-		sql.Named("id", routine.ID),
-		sql.Named("projectID", routine.ProjectID),
-		sql.Named("datasetID", routine.DatasetID),
-		sql.Named("metadata", string(metadata)),
-	); err != nil {
-		return err
-	}
-	return nil
+	return r.ExecuteStatement(ctx, tx, StmtUpdateRoutine, map[string]any{
+		"projectID": routine.ProjectID,
+		"datasetID": routine.DatasetID,
+		"id":        routine.ID,
+		"metadata":  string(metadata),
+	})
 }
 
 func (r *Repository) DeleteRoutine(ctx context.Context, tx *sql.Tx, routine *Routine) error {
-	stmt, err := r.queries.Get(ctx, tx, StmtDeleteRoutine)
+	return r.ExecuteStatement(ctx, tx, StmtDeleteRoutine, map[string]any{
+		"projectID": routine.ProjectID,
+		"datasetID": routine.DatasetID,
+		"id":        routine.ID,
+	})
+}
+
+func (r *Repository) ExecuteStatement(ctx context.Context, tx *sql.Tx, statement string, args map[string]interface{}) error {
+	stmt, err := r.manager.GetStatement(ctx, tx, statement)
 	if err != nil {
 		return err
 	}
-	if _, err := stmt.ExecContext(
-		ctx,
-		sql.Named("projectID", routine.ProjectID),
-		sql.Named("datasetID", routine.DatasetID),
-		sql.Named("id", routine.ID),
-	); err != nil {
+	namedArgs := make([]any, 0, len(args))
+	for name, value := range args {
+		namedArgs = append(namedArgs, sql.Named(name, value))
+	}
+	if _, err := stmt.ExecContext(ctx, namedArgs...); err != nil {
 		return err
 	}
 	return nil
-}
-
-func (r *Repository) convertToStrings(v []interface{}) []string {
-	ret := make([]string, 0, len(v))
-	for _, vv := range v {
-		ret = append(ret, vv.(string))
-	}
-	return ret
 }
