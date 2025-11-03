@@ -193,25 +193,35 @@ func (s *storageReadServer) buildQuery(status *readStreamStatus) string {
 }
 
 func (s *storageReadServer) query(ctx context.Context, status *readStreamStatus) (*internaltypes.QueryResponse, error) {
-	conn, err := s.server.connMgr.Connection(ctx, status.projectID, status.datasetID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get connection: %w", err)
-	}
-	tx, err := conn.Begin(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to start transaction: %w", err)
-	}
-	defer tx.RollbackIfNotCommitted()
+	response, err := connection.WithManagedConnection[*internaltypes.QueryResponse](s.server.connMgr, ctx, func(ctx context.Context, conn *connection.ManagedConnection) (*internaltypes.QueryResponse, error) {
+		tx, err := conn.Begin(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to begin transaction: %w", err)
+		}
 
-	query := s.buildQuery(status)
-	return s.server.contentRepo.Query(
-		ctx,
-		tx,
-		status.projectID,
-		status.datasetID,
-		query,
-		nil,
-	)
+		query := s.buildQuery(status)
+		response, err := s.server.contentRepo.Query(
+			ctx,
+			tx,
+			status.projectID,
+			status.datasetID,
+			query,
+			nil,
+		)
+		if err != nil {
+			_ = tx.RollbackIfNotCommitted()
+			return nil, err
+		}
+
+		if err = tx.Commit(); err != nil {
+			return nil, fmt.Errorf("failed to commit transaction: %w", err)
+		}
+		return response, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return response, err
 }
 
 func (s *storageReadServer) getAVROSchema(tableMetadata *bigqueryv2.Table, outputColumnMap map[string]struct{}) (*AVROSchema, error) {
@@ -498,24 +508,16 @@ func (s *storageWriteServer) appendRows(req *storagepb.AppendRowsRequest, msgDes
 		ctx := context.Background()
 		ctx = logger.WithLogger(ctx, s.server.logger)
 
-		conn, err := s.server.connMgr.Connection(ctx, status.projectID, status.datasetID)
+		err := s.server.connMgr.ExecuteWithTransaction(ctx, func(ctx context.Context, tx *connection.Tx) error {
+			tx.SetProjectAndDataset(status.projectID, status.datasetID)
+			if err := s.insertTableData(ctx, tx, status, data); err != nil {
+				s.sendErrorMessage(stream, streamName, err)
+				return err
+			}
+			return nil
+		})
 		if err != nil {
 			s.sendErrorMessage(stream, streamName, err)
-			return err
-		}
-		tx, err := conn.Begin(ctx)
-		if err != nil {
-			s.sendErrorMessage(stream, streamName, err)
-			return err
-		}
-		defer tx.RollbackIfNotCommitted()
-		if err := s.insertTableData(ctx, tx, status, data); err != nil {
-			s.sendErrorMessage(stream, streamName, err)
-			return err
-		}
-		if err := tx.Commit(); err != nil {
-			s.sendErrorMessage(stream, streamName, err)
-			return err
 		}
 	} else {
 		status.rows = append(status.rows, data...)
@@ -715,22 +717,15 @@ func (s *storageWriteServer) BatchCommitWriteStreams(ctx context.Context, req *s
 			})
 			continue
 		}
-		conn, err := s.server.connMgr.Connection(ctx, status.projectID, status.datasetID)
+
+		err := s.server.connMgr.ExecuteWithTransaction(ctx, func(ctx context.Context, tx *connection.Tx) error {
+			tx.SetProjectAndDataset(status.projectID, status.datasetID)
+			if err := s.insertTableData(ctx, tx, status, status.rows); err != nil {
+				streamErrors = append(streamErrors, s.createUnspecifiedStorageError(streamName, err))
+			}
+			return nil
+		})
 		if err != nil {
-			streamErrors = append(streamErrors, s.createUnspecifiedStorageError(streamName, err))
-			continue
-		}
-		tx, err := conn.Begin(ctx)
-		if err != nil {
-			streamErrors = append(streamErrors, s.createUnspecifiedStorageError(streamName, err))
-			continue
-		}
-		defer tx.RollbackIfNotCommitted()
-		if err := s.insertTableData(ctx, tx, status, status.rows); err != nil {
-			streamErrors = append(streamErrors, s.createUnspecifiedStorageError(streamName, err))
-			continue
-		}
-		if err := tx.Commit(); err != nil {
 			streamErrors = append(streamErrors, s.createUnspecifiedStorageError(streamName, err))
 		}
 	}
@@ -757,19 +752,15 @@ func (s *storageWriteServer) FlushRows(ctx context.Context, req *storagepb.Flush
 		return nil, fmt.Errorf("failed to find stream from %s", streamName)
 	}
 	offset := req.GetOffset().Value
-	conn, err := s.server.connMgr.Connection(ctx, status.projectID, status.datasetID)
+
+	err := s.server.connMgr.ExecuteWithTransaction(ctx, func(ctx context.Context, tx *connection.Tx) error {
+		tx.SetProjectAndDataset(status.projectID, status.datasetID)
+		if err := s.insertTableData(ctx, tx, status, status.rows[:offset+1]); err != nil {
+			return err
+		}
+		return nil
+	})
 	if err != nil {
-		return nil, err
-	}
-	tx, err := conn.Begin(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.RollbackIfNotCommitted()
-	if err := s.insertTableData(ctx, tx, status, status.rows[:offset+1]); err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	return &storagepb.FlushRowsResponse{

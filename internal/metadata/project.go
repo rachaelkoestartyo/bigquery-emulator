@@ -48,6 +48,7 @@ func (p *Project) Dataset(ctx context.Context, id string) (*Dataset, error) {
 func (p *Project) FetchDatasets(ctx context.Context) ([]*Dataset, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
+
 	datasets, err := p.repo.FindDatasetsInProject(ctx, p.ID)
 	if err != nil {
 		return nil, err
