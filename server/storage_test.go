@@ -682,6 +682,82 @@ func countRows(t *testing.T, iter *bigquery.RowIterator) int {
 	return resultRowCount
 }
 
+// TestNilReadOptions verifies that the emulator handles nil ReadOptions without panicking.
+// This is a regression test for a bug where requests without ReadOptions would cause
+// a nil pointer dereference.
+func TestNilReadOptions(t *testing.T) {
+	const (
+		projectName = "test"
+		dataset     = "dataset1"
+		table       = "table_a"
+	)
+
+	ctx := context.Background()
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.YAMLSource(filepath.Join("testdata", "data.yaml"))); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Close()
+	}()
+
+	opts, err := testServer.GRPCClientOptions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bqReadClient, err := bqStorage.NewBigQueryReadClient(ctx, opts...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bqReadClient.Close()
+
+	readTable := fmt.Sprintf("projects/%s/datasets/%s/tables/%s", projectName, dataset, table)
+
+	// Create a request with nil ReadOptions - this should not panic
+	createReadSessionRequest := &storagepb.CreateReadSessionRequest{
+		Parent: fmt.Sprintf("projects/%s", projectName),
+		ReadSession: &storagepb.ReadSession{
+			Table:       readTable,
+			DataFormat:  storagepb.DataFormat_ARROW,
+			ReadOptions: nil, // Explicitly nil
+		},
+		MaxStreamCount: 1,
+	}
+
+	session, err := bqReadClient.CreateReadSession(ctx, createReadSessionRequest, rpcOpts)
+	if err != nil {
+		t.Fatalf("CreateReadSession with nil ReadOptions failed: %v", err)
+	}
+
+	// Verify the session was created successfully
+	if len(session.GetStreams()) != 1 {
+		t.Fatalf("expected 1 stream but got %d", len(session.GetStreams()))
+	}
+
+	// Verify we can read from the stream (should return all columns)
+	readStream := session.GetStreams()[0].Name
+	rowStream, err := bqReadClient.ReadRows(ctx, &storagepb.ReadRowsRequest{
+		ReadStream: readStream,
+	}, rpcOpts)
+	if err != nil {
+		t.Fatalf("failed to create ReadRows stream: %v", err)
+	}
+
+	// Try to read at least one response to verify the stream works
+	resp, err := rowStream.Recv()
+	if err != nil && err != io.EOF {
+		t.Fatalf("failed to read from stream: %v", err)
+	}
+	if resp != nil {
+		t.Logf("Successfully read from stream with nil ReadOptions, got %d row(s)", resp.RowCount)
+	}
+}
+
 // TestStreamCountNormalization verifies that the emulator correctly handles
 // MaxStreamCount requests and normalizes them to the supported count.
 // This is a regression test for a bug where Python clients requesting multiple

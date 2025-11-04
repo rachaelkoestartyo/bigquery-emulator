@@ -105,8 +105,12 @@ func (s *storageReadServer) CreateReadSession(ctx context.Context, req *storagep
 		TableModifiers:             req.ReadSession.TableModifiers,
 		TraceId:                    req.ReadSession.TraceId,
 	}
-	outputColumns := req.ReadSession.ReadOptions.SelectedFields
-	condition := req.ReadSession.ReadOptions.RowRestriction
+	var outputColumns []string
+	var condition string
+	if req.ReadSession.ReadOptions != nil {
+		outputColumns = req.ReadSession.ReadOptions.SelectedFields
+		condition = req.ReadSession.ReadOptions.RowRestriction
+	}
 	outputColumnMap := map[string]struct{}{}
 	for _, outputColumn := range outputColumns {
 		outputColumnMap[outputColumn] = struct{}{}
