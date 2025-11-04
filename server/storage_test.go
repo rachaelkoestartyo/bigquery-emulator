@@ -682,6 +682,178 @@ func countRows(t *testing.T, iter *bigquery.RowIterator) int {
 	return resultRowCount
 }
 
+// TestArrayFieldSerialization verifies that array fields are correctly serialized to Arrow format.
+// This is a regression test for GitHub issue #399 where array fields caused a panic:
+// "panic: arrow/array: field 2 has 6 rows. want=3"
+// The bug was caused by calling listBuilder.Append() once per array element instead of once per row.
+func TestArrayFieldSerialization(t *testing.T) {
+	const (
+		projectID = "test"
+		datasetID = "testdataset"
+		tableID   = "testtable"
+	)
+
+	ctx := context.Background()
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Close()
+	}()
+
+	// Load test data with array fields
+	if err := bqServer.Load(
+		server.StructSource(
+			types.NewProject(
+				projectID,
+				types.NewDataset(
+					datasetID,
+					types.NewTable(
+						tableID,
+						[]*types.Column{
+							types.NewColumn("x", types.INT64),
+							types.NewColumn("y", types.STRING),
+							types.NewColumn("a", types.INT64, types.ColumnMode(types.RepeatedMode)),
+						},
+						types.Data{
+							{
+								"x": 1,
+								"y": "1 str",
+								"a": []interface{}{1, 2, 3},
+							},
+							{
+								"x": 2,
+								"y": "2nd str",
+								"a": []interface{}{}, // Empty array
+							},
+							{
+								"x": 33,
+								"y": "3rd string",
+								"a": []interface{}{0, 0, 0},
+							},
+						},
+					),
+				),
+			),
+		),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	opts, err := testServer.GRPCClientOptions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bqReadClient, err := bqStorage.NewBigQueryReadClient(ctx, opts...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bqReadClient.Close()
+
+	readTable := fmt.Sprintf("projects/%s/datasets/%s/tables/%s", projectID, datasetID, tableID)
+
+	// Select all columns including the array field
+	tableReadOptions := &storagepb.ReadSession_TableReadOptions{
+		SelectedFields: []string{"x", "y", "a"},
+	}
+
+	createReadSessionRequest := &storagepb.CreateReadSessionRequest{
+		Parent: fmt.Sprintf("projects/%s", projectID),
+		ReadSession: &storagepb.ReadSession{
+			Table:       readTable,
+			DataFormat:  storagepb.DataFormat_ARROW,
+			ReadOptions: tableReadOptions,
+		},
+		MaxStreamCount: 1,
+	}
+
+	session, err := bqReadClient.CreateReadSession(ctx, createReadSessionRequest, rpcOpts)
+	if err != nil {
+		t.Fatalf("CreateReadSession failed: %v", err)
+	}
+
+	if len(session.GetStreams()) != 1 {
+		t.Fatalf("expected 1 stream but got %d", len(session.GetStreams()))
+	}
+
+	readStream := session.GetStreams()[0].Name
+
+	// This is where the bug would occur - reading rows with array fields
+	rowStream, err := bqReadClient.ReadRows(ctx, &storagepb.ReadRowsRequest{
+		ReadStream: readStream,
+	}, rpcOpts)
+	if err != nil {
+		t.Fatalf("failed to create ReadRows stream: %v", err)
+	}
+
+	// Get the schema for decoding
+	serializedSchema := session.GetArrowSchema().GetSerializedSchema()
+	mem := memory.NewGoAllocator()
+	buf := bytes.NewBuffer(serializedSchema)
+	schemaReader, err := ipc.NewReader(buf, ipc.WithAllocator(mem))
+	if err != nil {
+		t.Fatalf("Failed to read schema: %v", err)
+	}
+	aschema := schemaReader.Schema()
+
+	totalRows := 0
+	for {
+		resp, err := rowStream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("rowStream.Recv error: %v", err)
+		}
+
+		arrowRecordBatch := resp.GetArrowRecordBatch()
+		if arrowRecordBatch != nil {
+			serializedBatch := arrowRecordBatch.GetSerializedRecordBatch()
+			if len(serializedBatch) > 0 {
+				buf = bytes.NewBuffer(serializedSchema)
+				buf.Write(serializedBatch)
+
+				reader, err := ipc.NewReader(buf, ipc.WithAllocator(mem), ipc.WithSchema(aschema))
+				if err != nil {
+					t.Fatalf("Failed to create Arrow reader: %v", err)
+				}
+
+				for reader.Next() {
+					rec := reader.RecordBatch()
+					totalRows += int(rec.NumRows())
+
+					// Verify we have the expected 3 columns
+					if rec.NumCols() != 3 {
+						t.Fatalf("Expected 3 columns, got %d", rec.NumCols())
+					}
+
+					// Verify the array column exists and can be accessed
+					arrayCol := rec.Column(2) // The 'a' column
+					if arrayCol == nil {
+						t.Fatal("array column is nil")
+					}
+
+					t.Logf("Successfully read %d rows with array field", rec.NumRows())
+				}
+
+				if err := reader.Err(); err != nil {
+					t.Fatalf("Arrow reader error: %v", err)
+				}
+			}
+		}
+	}
+
+	// Verify we read all 3 rows
+	if totalRows != 3 {
+		t.Fatalf("Expected to read 3 rows, got %d", totalRows)
+	}
+
+	t.Log("Successfully validated array field serialization in Arrow format")
+}
+
 // TestNilReadOptions verifies that the emulator handles nil ReadOptions without panicking.
 // This is a regression test for a bug where requests without ReadOptions would cause
 // a nil pointer dereference.
