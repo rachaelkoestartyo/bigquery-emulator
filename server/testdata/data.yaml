@@ -20,7 +20,7 @@ projects:
                 - name: value
                   type: JSON
             - name: birthday
-              type: DATE
+              type: DATETIME
             - name: skillNum
               type: NUMERIC
             - name: created_at

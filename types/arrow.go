@@ -3,10 +3,11 @@ package types
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
-	"github.com/apache/arrow/go/v10/arrow"
-	"github.com/apache/arrow/go/v10/arrow/array"
+	"github.com/apache/arrow-go/v18/arrow"
+	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/goccy/go-zetasqlite"
 	bigqueryv2 "google.golang.org/api/bigquery/v2"
 )
@@ -58,7 +59,7 @@ func tableFieldToARROW(f *bigqueryv2.TableFieldSchema) (*arrow.Field, error) {
 	case FieldDatetime:
 		return &arrow.Field{
 			Name: f.Name,
-			Type: arrow.FixedWidthTypes.Timestamp_us,
+			Type: &arrow.TimestampType{Unit: arrow.Microsecond},
 			Metadata: arrow.MetadataFrom(
 				map[string]string{
 					"ARROW:extension:name": "google:sqlType:datetime",
@@ -151,11 +152,22 @@ func AppendValueToARROWBuilder(ptrv *string, builder array.Builder) error {
 		}
 		b.Append(arrow.Time64(t.UnixMicro()))
 	case *array.TimestampBuilder:
-		t, err := zetasqlite.TimeFromTimestampValue(v)
-		if err != nil {
-			return err
+		// Handle datetime strings
+		var t arrow.Timestamp
+		if strings.Contains(v, "T") {
+			parsed, err := arrow.TimestampFromString(v, arrow.Microsecond)
+			if err != nil {
+				return err
+			}
+			t = parsed
+		} else {
+			parsed, err := zetasqlite.TimeFromTimestampValue(v)
+			if err != nil {
+				return err
+			}
+			t = arrow.Timestamp(parsed.UnixMicro())
 		}
-		b.Append(arrow.Timestamp(t.UnixMicro()))
+		b.Append(t)
 		return nil
 	}
 	return fmt.Errorf("unexpected builder type %T", builder)

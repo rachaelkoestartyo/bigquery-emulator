@@ -8,6 +8,7 @@ import (
 	"io"
 	"math/rand"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -18,9 +19,9 @@ import (
 	"cloud.google.com/go/bigquery/storage/managedwriter"
 	"cloud.google.com/go/bigquery/storage/managedwriter/adapt"
 	"github.com/GoogleCloudPlatform/golang-samples/bigquery/snippets/managedwriter/exampleproto"
-	"github.com/apache/arrow/go/v10/arrow"
-	"github.com/apache/arrow/go/v10/arrow/ipc"
-	"github.com/apache/arrow/go/v10/arrow/memory"
+	"github.com/apache/arrow-go/v18/arrow"
+	"github.com/apache/arrow-go/v18/arrow/ipc"
+	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/goccy/bigquery-emulator/server"
 	"github.com/goccy/go-json"
 	gax "github.com/googleapis/gax-go/v2"
@@ -134,9 +135,9 @@ func TestStorageReadAVRO(t *testing.T) {
 
 func TestStorageReadARROW(t *testing.T) {
 	const (
-		project = "test"
-		dataset = "dataset1"
-		table   = "table_a"
+		projectName = "test"
+		dataset     = "dataset1"
+		table       = "table_a"
 	)
 	ctx := context.Background()
 	bqServer, err := server.New(server.TempStorage)
@@ -161,7 +162,30 @@ func TestStorageReadARROW(t *testing.T) {
 	}
 	defer bqReadClient.Close()
 
-	readTable := fmt.Sprintf("projects/%s/datasets/%s/tables/%s", project, dataset, table)
+	project := types.NewProject(projectName, types.NewDataset(dataset,
+		types.NewTable("table1", []*types.Column{
+			types.NewColumn("id", types.STRING),
+		}, nil),
+	))
+
+	bqClient, err := buildClient(ctx, project, testServer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bqClient.Close()
+
+	q := bqClient.Query(fmt.Sprintf("SELECT * FROM `%s`.`%s`", dataset, table))
+	q.QueryConfig.Dst = &bigquery.Table{ProjectID: projectName, DatasetID: dataset, TableID: "table_a_materialized"}
+	job, err := q.Run(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = job.Wait(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	readTable := fmt.Sprintf("projects/%s/datasets/%s/tables/%s", projectName, q.QueryConfig.Dst.DatasetID, q.QueryConfig.Dst.TableID)
 
 	tableReadOptions := &storagepb.ReadSession_TableReadOptions{
 		SelectedFields: outputColumns,
@@ -169,7 +193,7 @@ func TestStorageReadARROW(t *testing.T) {
 	}
 
 	createReadSessionRequest := &storagepb.CreateReadSessionRequest{
-		Parent: fmt.Sprintf("projects/%s", project),
+		Parent: fmt.Sprintf("projects/%s", projectName),
 		ReadSession: &storagepb.ReadSession{
 			Table:       readTable,
 			DataFormat:  storagepb.DataFormat_ARROW,
@@ -208,7 +232,7 @@ func TestStorageReadARROW(t *testing.T) {
 		close(ch)
 	}()
 
-	// Start Avro processing and decoding in another goroutine.
+	// Start Arrow processing and decoding in another goroutine.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -349,13 +373,16 @@ func processArrow(t *testing.T, ctx context.Context, schema []byte, ch <-chan *s
 			}
 			undecoded := rows.GetArrowRecordBatch().GetSerializedRecordBatch()
 			if len(undecoded) > 0 {
-				buf = bytes.NewBuffer(undecoded)
+				// Prepend the schema to the record batch data
+				// This is the expected format for BigQuery Storage API
+				buf = bytes.NewBuffer(schema)
+				buf.Write(undecoded)
 				r, err = ipc.NewReader(buf, ipc.WithAllocator(mem), ipc.WithSchema(aschema))
 				if err != nil {
 					return err
 				}
 				for r.Next() {
-					rec := r.Record()
+					rec := r.RecordBatch()
 					validateArrowRecord(t, rec)
 				}
 			}
@@ -655,6 +682,137 @@ func countRows(t *testing.T, iter *bigquery.RowIterator) int {
 	return resultRowCount
 }
 
+// TestStreamCountNormalization verifies that the emulator correctly handles
+// MaxStreamCount requests and normalizes them to the supported count.
+// This is a regression test for a bug where Python clients requesting multiple
+// streams would encounter issues.
+func TestStreamCountNormalization(t *testing.T) {
+	const (
+		projectName = "test"
+		dataset     = "dataset1"
+		table       = "table_a"
+	)
+
+	tests := []struct {
+		name                string
+		maxStreamCount      int32
+		expectError         bool
+		expectedStreamCount int
+		errorContains       string
+	}{
+		{
+			name:                "request with MaxStreamCount = 0 should normalize to 1",
+			maxStreamCount:      0,
+			expectError:         false,
+			expectedStreamCount: 1,
+		},
+		{
+			name:                "request with MaxStreamCount = 1 should work",
+			maxStreamCount:      1,
+			expectError:         false,
+			expectedStreamCount: 1,
+		},
+		{
+			name:           "request with MaxStreamCount = 2 should error",
+			maxStreamCount: 2,
+			expectError:    true,
+			errorContains:  "currently supports only 1 stream(s)",
+		},
+		{
+			name:           "request with MaxStreamCount = 10 should error (Python client scenario)",
+			maxStreamCount: 10,
+			expectError:    true,
+			errorContains:  "currently supports only 1 stream(s)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			bqServer, err := server.New(server.TempStorage)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := bqServer.Load(server.YAMLSource(filepath.Join("testdata", "data.yaml"))); err != nil {
+				t.Fatal(err)
+			}
+			testServer := bqServer.TestServer()
+			defer func() {
+				testServer.Close()
+				bqServer.Close()
+			}()
+
+			opts, err := testServer.GRPCClientOptions(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			bqReadClient, err := bqStorage.NewBigQueryReadClient(ctx, opts...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer bqReadClient.Close()
+
+			readTable := fmt.Sprintf("projects/%s/datasets/%s/tables/%s", projectName, dataset, table)
+
+			createReadSessionRequest := &storagepb.CreateReadSessionRequest{
+				Parent: fmt.Sprintf("projects/%s", projectName),
+				ReadSession: &storagepb.ReadSession{
+					Table:      readTable,
+					DataFormat: storagepb.DataFormat_ARROW,
+					ReadOptions: &storagepb.ReadSession_TableReadOptions{
+						SelectedFields: []string{"id", "name"},
+					},
+				},
+				MaxStreamCount: tt.maxStreamCount,
+			}
+
+			session, err := bqReadClient.CreateReadSession(ctx, createReadSessionRequest, rpcOpts)
+
+			if tt.expectError {
+				if err == nil {
+					t.Fatalf("expected error containing %q but got none", tt.errorContains)
+				}
+				if !strings.Contains(err.Error(), tt.errorContains) {
+					t.Fatalf("expected error containing %q but got: %v", tt.errorContains, err)
+				}
+				t.Logf("Got expected error: %v", err)
+				return
+			}
+
+			// For successful cases
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			// Verify the stream count
+			actualStreamCount := len(session.GetStreams())
+			if actualStreamCount != tt.expectedStreamCount {
+				t.Fatalf("expected %d stream(s) but got %d", tt.expectedStreamCount, actualStreamCount)
+			}
+
+			// Verify we can actually read from the stream
+			if actualStreamCount > 0 {
+				readStream := session.GetStreams()[0].Name
+				rowStream, err := bqReadClient.ReadRows(ctx, &storagepb.ReadRowsRequest{
+					ReadStream: readStream,
+				}, rpcOpts)
+				if err != nil {
+					t.Fatalf("failed to create ReadRows stream: %v", err)
+				}
+
+				// Try to read at least one response to verify the stream works
+				resp, err := rowStream.Recv()
+				if err != nil && err != io.EOF {
+					t.Fatalf("failed to read from stream: %v", err)
+				}
+				if resp != nil {
+					t.Logf("Successfully read from normalized stream with %d row(s)", resp.RowCount)
+				}
+			}
+		})
+	}
+}
+
 func generateExampleMessages(numMessages int) ([][]byte, error) {
 	msgs := make([][]byte, numMessages)
 	for i := 0; i < numMessages; i++ {
@@ -720,4 +878,160 @@ func generateExampleMessages(numMessages int) ([][]byte, error) {
 		msgs[i] = b
 	}
 	return msgs, nil
+}
+
+// TestDatetimeTimezoneNaive verifies that DATETIME values are serialized
+// without timezone information (i.e., location-naive).
+// This is a regression test for a bug where DATETIME values were incorrectly
+// serialized with timezone information in Arrow format.
+func TestDatetimeTimezoneNaive(t *testing.T) {
+	const (
+		projectName = "test"
+		dataset     = "dataset1"
+		table       = "table_a"
+	)
+	ctx := context.Background()
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bqServer.Load(server.YAMLSource(filepath.Join("testdata", "data.yaml"))); err != nil {
+		t.Fatal(err)
+	}
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Close()
+	}()
+	opts, err := testServer.GRPCClientOptions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bqReadClient, err := bqStorage.NewBigQueryReadClient(ctx, opts...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bqReadClient.Close()
+
+	readTable := fmt.Sprintf("projects/%s/datasets/%s/tables/%s", projectName, dataset, table)
+
+	// Select the birthday column which is DATETIME type
+	tableReadOptions := &storagepb.ReadSession_TableReadOptions{
+		SelectedFields: []string{"id", "birthday"},
+		RowRestriction: `id = 1`,
+	}
+
+	createReadSessionRequest := &storagepb.CreateReadSessionRequest{
+		Parent: fmt.Sprintf("projects/%s", projectName),
+		ReadSession: &storagepb.ReadSession{
+			Table:       readTable,
+			DataFormat:  storagepb.DataFormat_ARROW,
+			ReadOptions: tableReadOptions,
+		},
+		MaxStreamCount: 1,
+	}
+
+	// Create the session from the request.
+	session, err := bqReadClient.CreateReadSession(ctx, createReadSessionRequest, rpcOpts)
+	if err != nil {
+		t.Fatalf("CreateReadSession: %v", err)
+	}
+	if len(session.GetStreams()) == 0 {
+		t.Fatalf("no streams in session")
+	}
+
+	readStream := session.GetStreams()[0].Name
+
+	// Use the BigQuery Storage client to read rows
+	rowStream, err := bqReadClient.ReadRows(ctx, &storagepb.ReadRowsRequest{
+		ReadStream: readStream,
+	}, rpcOpts)
+	if err != nil {
+		t.Fatalf("ReadRows: %v", err)
+	}
+
+	// Get the schema for decoding
+	serializedSchema := session.GetArrowSchema().GetSerializedSchema()
+	mem := memory.NewGoAllocator()
+	buf := bytes.NewBuffer(serializedSchema)
+	schemaReader, err := ipc.NewReader(buf, ipc.WithAllocator(mem))
+	if err != nil {
+		t.Fatalf("Failed to read schema: %v", err)
+	}
+	aschema := schemaReader.Schema()
+
+	// Verify the birthday field is timezone-naive
+	birthdayFieldIdx := aschema.FieldIndices("birthday")
+	if len(birthdayFieldIdx) == 0 {
+		t.Fatal("birthday field not found in schema")
+	}
+	birthdayField := aschema.Field(birthdayFieldIdx[0])
+
+	// The type should be a TimestampType
+	tsType, ok := birthdayField.Type.(*arrow.TimestampType)
+	if !ok {
+		t.Fatalf("birthday field is not a TimestampType, got %T", birthdayField.Type)
+	}
+
+	// Verify it has no timezone (should be empty string for location-naive)
+	if tsType.TimeZone != "" {
+		t.Fatalf("birthday field should be timezone-naive but has timezone: %s", tsType.TimeZone)
+	}
+
+	// Verify the unit is microseconds
+	if tsType.Unit != arrow.Microsecond {
+		t.Fatalf("birthday field should use microsecond unit, got %v", tsType.Unit)
+	}
+
+	// Also read and verify the actual data can be decoded properly
+	foundData := false
+	for {
+		resp, err := rowStream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("rowStream.Recv: %v", err)
+		}
+
+		arrowRecordBatch := resp.GetArrowRecordBatch()
+		if arrowRecordBatch != nil {
+			serializedBatch := arrowRecordBatch.GetSerializedRecordBatch()
+			if len(serializedBatch) > 0 {
+				buf = bytes.NewBuffer(serializedSchema)
+				buf.Write(serializedBatch)
+
+				reader, err := ipc.NewReader(buf, ipc.WithAllocator(mem), ipc.WithSchema(aschema))
+				if err != nil {
+					t.Fatalf("Failed to create Arrow reader: %v", err)
+				}
+
+				for reader.Next() {
+					rec := reader.RecordBatch()
+					if rec.NumRows() > 0 {
+						foundData = true
+
+						// Verify we can read the birthday column
+						birthdayCol := rec.Column(birthdayFieldIdx[0])
+						if birthdayCol == nil {
+							t.Fatal("birthday column is nil")
+						}
+
+						// Verify the column is a valid Arrow array (successfully decoded)
+						t.Logf("Successfully decoded birthday column as %T with %d rows", birthdayCol, rec.NumRows())
+					}
+				}
+
+				if err := reader.Err(); err != nil {
+					t.Fatalf("Arrow reader error: %v", err)
+				}
+			}
+		}
+	}
+
+	if !foundData {
+		t.Fatal("Expected to read at least one row with birthday data")
+	}
+
+	t.Log("Successfully validated that DATETIME values are timezone-naive in Arrow format")
 }
