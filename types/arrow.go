@@ -151,6 +151,7 @@ func AppendValueToARROWBuilder(ptrv *string, builder array.Builder) error {
 			return err
 		}
 		b.Append(arrow.Time64(t.UnixMicro()))
+		return nil
 	case *array.TimestampBuilder:
 		// Handle datetime strings
 		var t arrow.Timestamp

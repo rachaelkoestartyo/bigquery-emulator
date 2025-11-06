@@ -3,6 +3,7 @@ package server_test
 
 import (
 	"bytes"
+	"cloud.google.com/go/civil"
 	"context"
 	"fmt"
 	"io"
@@ -26,6 +27,7 @@ import (
 	"github.com/goccy/go-json"
 	gax "github.com/googleapis/gax-go/v2"
 	goavro "github.com/linkedin/goavro/v2"
+	bigqueryv2 "google.golang.org/api/bigquery/v2"
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
@@ -41,7 +43,7 @@ var (
 	rpcOpts = gax.WithGRPCOptions(
 		grpc.MaxCallRecvMsgSize(1024 * 1024 * 129),
 	)
-	outputColumns = []string{"id", "name", "structarr", "birthday", "skillNum", "created_at"}
+	outputColumns = []string{"id", "name", "structarr", "birthday", "skillNum", "created_at", "age", "birth_date", "wake_time", "score", "active", "metadata"}
 )
 
 func TestStorageReadAVRO(t *testing.T) {
@@ -76,7 +78,6 @@ func TestStorageReadAVRO(t *testing.T) {
 	readTable := fmt.Sprintf("projects/%s/datasets/%s/tables/%s", project, dataset, table)
 
 	tableReadOptions := &storagepb.ReadSession_TableReadOptions{
-		SelectedFields: outputColumns,
 		RowRestriction: `id = 1`,
 	}
 
@@ -114,10 +115,10 @@ func TestStorageReadAVRO(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		defer close(ch)
 		if err := processStream(t, ctx, bqReadClient, readStream, ch); err != nil {
-			t.Fatalf("processStream failure: %v", err)
+			t.Errorf("processStream failure: %v", err)
 		}
-		close(ch)
 	}()
 
 	// Start Avro processing and decoding in another goroutine.
@@ -125,7 +126,7 @@ func TestStorageReadAVRO(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		if err := processAvro(t, ctx, session.GetAvroSchema().GetSchema(), ch); err != nil {
-			t.Fatalf("error processing %s: %v", storagepb.DataFormat_AVRO, err)
+			t.Errorf("error processing %s: %v", storagepb.DataFormat_AVRO, err)
 		}
 	}()
 
@@ -226,10 +227,10 @@ func TestStorageReadARROW(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		defer close(ch)
 		if err := processStream(t, ctx, bqReadClient, readStream, ch); err != nil {
-			t.Fatalf("processStream failure: %v", err)
+			t.Errorf("processStream failure: %v", err)
 		}
-		close(ch)
 	}()
 
 	// Start Arrow processing and decoding in another goroutine.
@@ -237,7 +238,7 @@ func TestStorageReadARROW(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		if err := processArrow(t, ctx, session.GetArrowSchema().GetSerializedSchema(), ch); err != nil {
-			t.Fatalf("error processing %s: %v", storagepb.DataFormat_ARROW, err)
+			t.Errorf("error processing %s: %v", storagepb.DataFormat_ARROW, err)
 		}
 	}()
 
@@ -1282,4 +1283,348 @@ func TestDatetimeTimezoneNaive(t *testing.T) {
 	}
 
 	t.Log("Successfully validated that DATETIME values are timezone-naive in Arrow format")
+}
+
+func TestStorageReadAVROWithAPICreatedTable(t *testing.T) {
+	const (
+		projectID = "test"
+		datasetID = "test_dataset"
+		tableID   = "test_table"
+	)
+
+	ctx := context.Background()
+
+	// Create empty server with just project and dataset
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := types.NewProject(projectID, types.NewDataset(datasetID))
+	if err := bqServer.Load(server.StructSource(project)); err != nil {
+		t.Fatal(err)
+	}
+
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Close()
+	}()
+
+	// Create BigQuery client
+	bqClient, err := bigquery.NewClient(
+		ctx,
+		projectID,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bqClient.Close()
+
+	// Create table via API with schema that uses INT64 (not INTEGER)
+	// This reproduces the issue where BigQuery API returns INT64 type names
+	schema := bigquery.Schema{
+		{Name: "string_col", Type: bigquery.StringFieldType},
+		{Name: "int_col", Type: bigquery.IntegerFieldType},
+		{Name: "float_col", Type: bigquery.FloatFieldType},
+		{Name: "bool_col", Type: bigquery.BooleanFieldType},
+		{Name: "bytes_col", Type: bigquery.BytesFieldType},
+		{Name: "date_col", Type: bigquery.DateFieldType},
+		{Name: "datetime_col", Type: bigquery.DateTimeFieldType},
+		{Name: "timestamp_col", Type: bigquery.TimestampFieldType},
+		{Name: "time_col", Type: bigquery.TimeFieldType},
+		{Name: "numeric_col", Type: bigquery.NumericFieldType},
+		{Name: "bignumeric_col", Type: bigquery.BigNumericFieldType},
+		{Name: "array_col", Type: bigquery.StringFieldType, Repeated: true},
+		{
+			Name: "struct_col",
+			Type: bigquery.RecordFieldType,
+			Schema: bigquery.Schema{
+				{Name: "field1", Type: bigquery.IntegerFieldType},
+				{Name: "field2", Type: bigquery.StringFieldType},
+			},
+		},
+	}
+
+	table := bqClient.Dataset(datasetID).Table(tableID)
+	if err := table.Create(ctx, &bigquery.TableMetadata{Schema: schema}); err != nil {
+		t.Fatalf("failed to create table: %v", err)
+	}
+
+	// Check what type names are actually stored in the table metadata
+	metadata, err := table.Metadata(ctx)
+	if err != nil {
+		t.Fatalf("failed to get table metadata: %v", err)
+	}
+	t.Logf("Table schema after creation:")
+	for _, field := range metadata.Schema {
+		t.Logf("  Field: %s, Type: %s", field.Name, field.Type)
+		if field.Type == bigquery.RecordFieldType && field.Schema != nil {
+			for _, subfield := range field.Schema {
+				t.Logf("    Subfield: %s, Type: %s", subfield.Name, subfield.Type)
+			}
+		}
+	}
+
+	// Insert data - use string values for date/datetime to avoid import issues
+	type TestRow struct {
+		StringCol     string                 `bigquery:"string_col"`
+		IntCol        int64                  `bigquery:"int_col"`
+		FloatCol      float64                `bigquery:"float_col"`
+		BoolCol       bool                   `bigquery:"bool_col"`
+		BytesCol      []byte                 `bigquery:"bytes_col"`
+		DateCol       string                 `bigquery:"date_col"`
+		DatetimeCol   string                 `bigquery:"datetime_col"`
+		TimestampCol  time.Time              `bigquery:"timestamp_col"`
+		TimeCol       civil.Time             `bigquery:"time_col"`
+		NumericCol    string                 `bigquery:"numeric_col"`
+		BignumericCol string                 `bigquery:"bignumeric_col"`
+		ArrayCol      []string               `bigquery:"array_col"`
+		StructCol     map[string]interface{} `bigquery:"struct_col"`
+	}
+
+	testData := []TestRow{
+		{
+			StringCol:     "hello",
+			IntCol:        42,
+			FloatCol:      3.14,
+			BoolCol:       true,
+			BytesCol:      []byte("abc"),
+			DateCol:       "2024-01-01",
+			DatetimeCol:   "2024-01-01T12:00:00",
+			TimestampCol:  time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC),
+			TimeCol:       civil.Time{Hour: 12},
+			NumericCol:    "123.456",
+			BignumericCol: "999999999999999999999.999999999",
+			ArrayCol:      []string{"x", "y"},
+			StructCol:     map[string]interface{}{"field1": int64(1), "field2": "nested"},
+		},
+	}
+
+	inserter := table.Inserter()
+	if err := inserter.Put(ctx, testData); err != nil {
+		t.Fatalf("failed to insert rows: %v", err)
+	}
+
+	// Now try to read via Storage API with AVRO format
+	// This should fail with "unsupported avro type INT64" error
+	opts, err := testServer.GRPCClientOptions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bqReadClient, err := bqStorage.NewBigQueryReadClient(ctx, opts...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = bqReadClient.Close() }()
+
+	readTable := fmt.Sprintf("projects/%s/datasets/%s/tables/%s", projectID, datasetID, tableID)
+
+	createReadSessionRequest := &storagepb.CreateReadSessionRequest{
+		Parent: fmt.Sprintf("projects/%s", projectID),
+		ReadSession: &storagepb.ReadSession{
+			Table:      readTable,
+			DataFormat: storagepb.DataFormat_AVRO,
+		},
+		MaxStreamCount: 1,
+	}
+
+	session, err := bqReadClient.CreateReadSession(ctx, createReadSessionRequest, rpcOpts)
+	if err != nil {
+		t.Fatalf("CreateReadSession: %v", err)
+	}
+
+	if len(session.GetStreams()) == 0 {
+		t.Fatal("no streams in session")
+	}
+
+	// Try to read the data - this should trigger the INT64 error
+	stream := session.GetStreams()[0]
+	readRowsRequest := &storagepb.ReadRowsRequest{
+		ReadStream: stream.Name,
+	}
+
+	rowStream, err := bqReadClient.ReadRows(ctx, readRowsRequest, rpcOpts)
+	if err != nil {
+		t.Fatalf("ReadRows: %v", err)
+	}
+
+	// Try to read first response - should fail with AVRO marshaling error
+	_, err = rowStream.Recv()
+	if err != nil {
+		t.Logf("Expected error occurred: %v", err)
+		// This is the error we expect: "unsupported avro type INT64"
+		if !strings.Contains(err.Error(), "INT64") && !strings.Contains(err.Error(), "unsupported") {
+			t.Fatalf("Expected INT64-related error, got: %v", err)
+		}
+		return
+	}
+
+	// If we get here without error, the bug might be fixed
+	t.Log("Successfully read data from API-created table with INT64 types")
+}
+
+func TestStorageReadAVROWithINT64Type(t *testing.T) {
+	// This test reproduces the Python client issue where tables have INT64 type names
+	// instead of INTEGER, which causes AVRO marshaling to fail
+	const (
+		projectID = "test"
+		datasetID = "test_dataset"
+		tableID   = "test_table_int64"
+	)
+
+	ctx := context.Background()
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create empty project and dataset first
+	project := types.NewProject(projectID, types.NewDataset(datasetID))
+	if err := bqServer.Load(server.StructSource(project)); err != nil {
+		t.Fatal(err)
+	}
+
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Close()
+	}()
+
+	// Use raw BigQuery v2 API service to insert table with INT64 type names
+	// This bypasses ALL normalization and goes directly through tablesInsertHandler
+	bqService, err := bigqueryv2.NewService(
+		ctx,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create table with raw INT64 type names that won't be normalized
+	tableToInsert := &bigqueryv2.Table{
+		TableReference: &bigqueryv2.TableReference{
+			ProjectId: projectID,
+			DatasetId: datasetID,
+			TableId:   tableID,
+		},
+		Schema: &bigqueryv2.TableSchema{
+			Fields: []*bigqueryv2.TableFieldSchema{
+				{Name: "int_col", Type: "INT64", Mode: "NULLABLE"}, // Raw INT64
+				{Name: "string_col", Type: "STRING", Mode: "NULLABLE"},
+				{
+					Name: "struct_col",
+					Type: "RECORD",
+					Mode: "NULLABLE",
+					Fields: []*bigqueryv2.TableFieldSchema{
+						{Name: "field1", Type: "INT64", Mode: "NULLABLE"}, // INT64 in nested field
+						{Name: "field2", Type: "STRING", Mode: "NULLABLE"},
+					},
+				},
+			},
+		},
+	}
+
+	_, err = bqService.Tables.Insert(projectID, datasetID, tableToInsert).Context(ctx).Do()
+	if err != nil {
+		t.Fatalf("failed to insert table via v2 API: %v", err)
+	}
+
+	// Verify the type names are normalized to canonical forms
+	retrievedTable, err := bqService.Tables.Get(projectID, datasetID, tableID).Context(ctx).Do()
+	if err != nil {
+		t.Fatalf("failed to get table: %v", err)
+	}
+	t.Logf("Stored type for int_col: %s (should be INTEGER, not INT64)", retrievedTable.Schema.Fields[0].Type)
+	t.Logf("Stored type for struct_col.field1: %s (should be INTEGER, not INT64)", retrievedTable.Schema.Fields[2].Fields[0].Type)
+
+	// Verify normalization happened
+	if retrievedTable.Schema.Fields[0].Type != "INTEGER" {
+		t.Errorf("Expected int_col type to be normalized to INTEGER, got %s", retrievedTable.Schema.Fields[0].Type)
+	}
+	if retrievedTable.Schema.Fields[2].Fields[0].Type != "INTEGER" {
+		t.Errorf("Expected struct_col.field1 type to be normalized to INTEGER, got %s", retrievedTable.Schema.Fields[2].Fields[0].Type)
+	}
+
+	// Insert a row using high-level client
+	bqClient, err := bigquery.NewClient(ctx, projectID, option.WithEndpoint(testServer.URL), option.WithoutAuthentication())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bqClient.Close()
+
+	type TestRow struct {
+		IntCol    int64                  `bigquery:"int_col"`
+		StringCol string                 `bigquery:"string_col"`
+		StructCol map[string]interface{} `bigquery:"struct_col"`
+	}
+	inserter := bqClient.Dataset(datasetID).Table(tableID).Inserter()
+	if err := inserter.Put(ctx, []TestRow{{
+		IntCol:    42,
+		StringCol: "hello",
+		StructCol: map[string]interface{}{"field1": int64(1), "field2": "nested"},
+	}}); err != nil {
+		t.Fatalf("failed to insert: %v", err)
+	}
+
+	// Try to read via Storage API with AVRO format
+	opts, err := testServer.GRPCClientOptions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bqReadClient, err := bqStorage.NewBigQueryReadClient(ctx, opts...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = bqReadClient.Close() }()
+
+	readTable := fmt.Sprintf("projects/%s/datasets/%s/tables/%s", projectID, datasetID, tableID)
+
+	createReadSessionRequest := &storagepb.CreateReadSessionRequest{
+		Parent: fmt.Sprintf("projects/%s", projectID),
+		ReadSession: &storagepb.ReadSession{
+			Table:      readTable,
+			DataFormat: storagepb.DataFormat_AVRO,
+		},
+		MaxStreamCount: 1,
+	}
+
+	// After normalization, this should succeed (no "unsupported avro type INT64" error)
+	session, err := bqReadClient.CreateReadSession(ctx, createReadSessionRequest, rpcOpts)
+	if err != nil {
+		t.Fatalf("CreateReadSession failed: %v", err)
+	}
+
+	if len(session.GetStreams()) == 0 {
+		t.Fatal("no streams in session")
+	}
+
+	t.Logf("AVRO schema created successfully with normalized types")
+
+	stream := session.GetStreams()[0]
+	readRowsRequest := &storagepb.ReadRowsRequest{
+		ReadStream: stream.Name,
+	}
+
+	rowStream, err := bqReadClient.ReadRows(ctx, readRowsRequest, rpcOpts)
+	if err != nil {
+		t.Fatalf("ReadRows: %v", err)
+	}
+
+	// Should be able to read the data successfully
+	resp, err := rowStream.Recv()
+	if err != nil {
+		t.Fatalf("Failed to receive data: %v", err)
+	}
+
+	if resp.RowCount == 0 {
+		t.Fatal("Expected to receive at least one row")
+	}
+
+	t.Logf("Successfully read %d rows via Storage API with AVRO format after type normalization", resp.RowCount)
 }

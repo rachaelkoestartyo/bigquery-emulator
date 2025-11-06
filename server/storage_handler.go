@@ -269,7 +269,9 @@ func (s *storageReadServer) sendAVRORows(status *readStreamStatus, response *int
 		}
 		b, err := codec.BinaryFromNative(buf, value)
 		if err != nil {
-			return fmt.Errorf("failed to encode binary from go value: %w", err)
+			// On error, dump the value that failed
+			valueJSON, _ := json.MarshalIndent(value, "", "  ")
+			return fmt.Errorf("failed to encode binary from go value (value=%s): %w", valueJSON, err)
 		}
 		buf = b
 	}

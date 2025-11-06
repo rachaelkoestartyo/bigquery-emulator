@@ -1,9 +1,11 @@
 package types
 
 import (
+	"encoding/base64"
 	"fmt"
 	"math/big"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/goccy/go-json"
@@ -25,6 +27,7 @@ type AVROFieldSchema struct {
 
 type AVROType struct {
 	TypeSchema *bigqueryv2.TableFieldSchema
+	Namespace  string // Namespace for record types
 }
 
 func (t *AVROType) Key() string {
@@ -40,20 +43,30 @@ func (t *AVROType) Key() string {
 	case FieldBytes:
 		return "bytes"
 	case FieldDate:
+		// Date: goavro uses compound name for unions (standard AVRO logical type)
 		return "int.date"
 	case FieldDatetime:
-		return "string.datetime"
+		// Datetime: goavro uses base type for unions (non-standard AVRO type)
+		return "string"
 	case FieldTime:
+		// Time: goavro uses compound name for unions (to be verified)
 		return "long.time-micros"
 	case FieldTimestamp:
+		// Timestamp: goavro uses compound name for unions
 		return "long.timestamp-micros"
 	case FieldJSON:
 		return "string"
 	case FieldRecord:
+		// For records, include namespace if present
+		if t.Namespace != "" {
+			return fmt.Sprintf("%s.%s", t.Namespace, t.TypeSchema.Name)
+		}
 		return t.TypeSchema.Name
 	case FieldNumeric:
+		// Decimal: goavro uses compound name for unions
 		return "bytes.decimal"
 	case FieldBignumeric:
+		// Decimal: goavro uses compound name for unions
 		return "bytes.decimal"
 	}
 	return ""
@@ -72,7 +85,12 @@ func (t *AVROType) CastValue(v string) (interface{}, error) {
 	case FieldJSON:
 		return v, nil
 	case FieldBytes:
-		return []byte(v), nil
+		// Bytes are stored as base64 in BigQuery JSON API, decode to raw bytes
+		decoded, err := base64.StdEncoding.DecodeString(v)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode base64 bytes: %w", err)
+		}
+		return decoded, nil
 	case FieldNumeric, FieldBignumeric:
 		r := new(big.Rat)
 		r.SetString(v)
@@ -92,13 +110,82 @@ func (t *AVROType) CastValue(v string) (interface{}, error) {
 	return v, nil
 }
 
+// AVROPrimitiveValue converts a string value to its AVRO primitive type
+// for encoding. Unlike CastValue which returns Go native types, this returns
+// the underlying AVRO primitive type (string, int, long, bytes) that goavro expects.
+func (t *AVROType) AVROPrimitiveValue(v string) (interface{}, error) {
+	switch FieldType(t.TypeSchema.Type) {
+	case FieldInteger:
+		return strconv.ParseInt(v, 10, 64)
+	case FieldBoolean:
+		return strconv.ParseBool(v)
+	case FieldFloat:
+		return strconv.ParseFloat(v, 64)
+	case FieldString:
+		return v, nil
+	case FieldJSON:
+		return v, nil
+	case FieldBytes:
+		// Bytes are stored as base64 in BigQuery JSON API, decode to raw bytes for AVRO
+		decoded, err := base64.StdEncoding.DecodeString(v)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode base64 bytes: %w", err)
+		}
+		return decoded, nil
+	case FieldNumeric, FieldBignumeric:
+		// For decimal logical types, goavro expects *big.Rat
+		r := new(big.Rat)
+		if _, ok := r.SetString(v); !ok {
+			return nil, fmt.Errorf("failed to parse numeric value: %s", v)
+		}
+		return r, nil
+	case FieldDate:
+		// Date is encoded as int (days since Unix epoch)
+		parsed, err := time.Parse("2006-01-02", v)
+		if err != nil {
+			return nil, err
+		}
+		// Calculate days since Unix epoch (1970-01-01)
+		days := int32(parsed.Unix() / 86400)
+		return days, nil
+	case FieldDatetime:
+		// Datetime is encoded as string (not parsed to time.Time)
+		return v, nil
+	case FieldTime:
+		// Time is encoded as long (microseconds since midnight)
+		parsed, err := time.Parse("15:04:05.999999", v)
+		if err != nil {
+			parsed, err = time.Parse("15:04:05", v)
+			if err != nil {
+				return nil, err
+			}
+		}
+		// Calculate microseconds since midnight
+		micros := int64(parsed.Hour())*3600000000 +
+			int64(parsed.Minute())*60000000 +
+			int64(parsed.Second())*1000000 +
+			int64(parsed.Nanosecond())/1000
+		return micros, nil
+	case FieldTimestamp:
+		// Timestamp is encoded as long (microseconds since Unix epoch)
+		t, err := zetasqlite.TimeFromTimestampValue(v)
+		if err != nil {
+			return nil, err
+		}
+		return t.UnixMicro(), nil
+	}
+	return v, nil
+}
+
 func (t *AVROType) MarshalJSON() ([]byte, error) {
 	b, err := marshalAVROType(t.TypeSchema)
 	if err != nil {
 		return nil, err
 	}
 	typ := json.RawMessage(b)
-	switch Mode(t.TypeSchema.Mode) {
+	// Normalize mode to uppercase for comparison
+	mode := Mode(strings.ToUpper(t.TypeSchema.Mode))
+	switch mode {
 	case RepeatedMode:
 		return json.Marshal(map[string]interface{}{
 			"type":  "array",
@@ -153,6 +240,8 @@ func marshalAVROType(t *bigqueryv2.TableFieldSchema) ([]byte, error) {
 		})
 	case FieldRecord:
 		var fields []interface{}
+		// Note: Calling TableFieldSchemasToAVRO (without namespace) for nested fields
+		// because we want to preserve the namespace-less schema structure
 		for _, field := range TableFieldSchemasToAVRO(t.Fields) {
 			b, err := json.Marshal(field.Type)
 			if err != nil {
@@ -163,6 +252,7 @@ func marshalAVROType(t *bigqueryv2.TableFieldSchema) ([]byte, error) {
 				"type": json.RawMessage(b),
 			})
 		}
+		// Nested records should NOT have a namespace, they inherit from the parent
 		return json.Marshal(map[string]interface{}{
 			"type":   "record",
 			"name":   t.Name,
@@ -196,26 +286,47 @@ func marshalAVROType(t *bigqueryv2.TableFieldSchema) ([]byte, error) {
 	return nil, fmt.Errorf("unsupported avro type %s", t.Type)
 }
 
+// sanitizeAVROName replaces characters that are invalid in AVRO names (must be [A-Za-z0-9_])
+// BigQuery allows hyphens in project/dataset/table IDs, but AVRO does not
+func sanitizeAVROName(name string) string {
+	return strings.ReplaceAll(name, "-", "_")
+}
+
 func TableToAVRO(t *bigqueryv2.Table) *AVROSchema {
+	// Sanitize project and dataset IDs for AVRO namespace
+	namespace := fmt.Sprintf("%s.%s",
+		sanitizeAVROName(t.TableReference.ProjectId),
+		sanitizeAVROName(t.TableReference.DatasetId))
 	return &AVROSchema{
-		Namespace: fmt.Sprintf("%s.%s", t.TableReference.ProjectId, t.TableReference.DatasetId),
-		Name:      t.TableReference.TableId,
+		Namespace: namespace,
+		Name:      sanitizeAVROName(t.TableReference.TableId),
 		Type:      "record",
-		Fields:    TableFieldSchemasToAVRO(t.Schema.Fields),
+		Fields:    tableFieldSchemasToAVROWithNamespace(t.Schema.Fields, namespace),
 	}
 }
 
 func TableFieldSchemasToAVRO(fields []*bigqueryv2.TableFieldSchema) []*AVROFieldSchema {
+	return tableFieldSchemasToAVROWithNamespace(fields, "")
+}
+
+func tableFieldSchemasToAVROWithNamespace(fields []*bigqueryv2.TableFieldSchema, namespace string) []*AVROFieldSchema {
 	ret := make([]*AVROFieldSchema, 0, len(fields))
 	for _, field := range fields {
-		ret = append(ret, TableFieldSchemaToAVRO(field))
+		ret = append(ret, tableFieldSchemaToAVROWithNamespace(field, namespace))
 	}
 	return ret
 }
 
 func TableFieldSchemaToAVRO(s *bigqueryv2.TableFieldSchema) *AVROFieldSchema {
+	return tableFieldSchemaToAVROWithNamespace(s, "")
+}
+
+func tableFieldSchemaToAVROWithNamespace(s *bigqueryv2.TableFieldSchema, namespace string) *AVROFieldSchema {
 	return &AVROFieldSchema{
-		Type: &AVROType{TypeSchema: s},
+		Type: &AVROType{
+			TypeSchema: s,
+			Namespace:  namespace,
+		},
 		Name: s.Name,
 	}
 }

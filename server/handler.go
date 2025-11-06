@@ -2664,6 +2664,10 @@ func (h *tablesInsertHandler) Handle(ctx context.Context, r *tablesInsertRequest
 		}
 		r.table.Schema = schema
 	} else if r.table.Schema != nil {
+		// Normalize type aliases (INT64→INTEGER, FLOAT64→FLOAT, etc.) before storage
+		for i, field := range r.table.Schema.Fields {
+			r.table.Schema.Fields[i] = types.NormalizeTableFieldSchema(field)
+		}
 		if err := r.server.contentRepo.CreateTable(ctx, tx, r.table); err != nil {
 			if strings.HasSuffix(err.Error(), "already exists (1)") {
 				return nil, errDuplicate(err.Error())
