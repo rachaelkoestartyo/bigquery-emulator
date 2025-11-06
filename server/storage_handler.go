@@ -585,6 +585,7 @@ func (s *storageWriteServer) appendRows(req *storagepb.AppendRowsRequest, msgDes
 		})
 		if err != nil {
 			s.sendErrorMessage(stream, streamName, err)
+			return err
 		}
 	} else {
 		status.rows = append(status.rows, data...)
