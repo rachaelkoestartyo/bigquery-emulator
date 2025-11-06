@@ -1425,6 +1425,7 @@ func (h *jobsInsertHandler) copyFromBigQuery(ctx context.Context, r *jobsInsertR
 	if err != nil {
 		return nil, fmt.Errorf("failed to set up temporary file: %w", err)
 	}
+	defer os.Remove(tmpf.Name())
 
 	conn := connectionFromContext(ctx).ConfigureScope(r.project.ID, "")
 	tx, err := conn.Begin(ctx)
