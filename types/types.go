@@ -68,7 +68,7 @@ type Data []map[string]interface{}
 type Mode string
 
 func (m *Mode) UnmarshalYAML(b []byte) error {
-	switch strings.ToLower(string(b)) {
+	switch strings.TrimSpace(strings.ToLower(string(b))) {
 	case strings.ToLower(string(NullableMode)):
 		*m = NullableMode
 	case strings.ToLower(string(RequiredMode)):
@@ -80,7 +80,7 @@ func (m *Mode) UnmarshalYAML(b []byte) error {
 }
 
 func (m *Mode) UnmarshalJSON(b []byte) error {
-	switch strings.ToLower(strings.Trim(string(b), `"`)) {
+	switch strings.TrimSpace(strings.ToLower(strings.Trim(string(b), `"`))) {
 	case strings.ToLower(string(NullableMode)):
 		*m = NullableMode
 	case strings.ToLower(string(RequiredMode)):
@@ -145,6 +145,13 @@ func tableFieldSchemaFromColumn(c *Column) *bigqueryv2.TableFieldSchema {
 		Fields: fields,
 		Mode:   string(c.Mode),
 	}
+}
+
+// NormalizeTableFieldSchema normalizes type aliases (INT64→INTEGER, FLOAT64→FLOAT, etc.)
+// to their canonical forms by round-tripping through Column type which uses FieldType()
+func NormalizeTableFieldSchema(schema *bigqueryv2.TableFieldSchema) *bigqueryv2.TableFieldSchema {
+	col := NewColumnWithSchema(schema)
+	return tableFieldSchemaFromColumn(col)
 }
 
 type Job struct {

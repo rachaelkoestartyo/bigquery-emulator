@@ -20,11 +20,23 @@ projects:
                 - name: value
                   type: JSON
             - name: birthday
-              type: DATE
+              type: DATETIME
             - name: skillNum
               type: NUMERIC
             - name: created_at
               type: TIMESTAMP
+            - name: age
+              type: INT64
+            - name: birth_date
+              type: DATE
+            - name: wake_time
+              type: TIME
+            - name: score
+              type: FLOAT
+            - name: active
+              type: BOOLEAN
+            - name: metadata
+              type: JSON
           data:
             - id: 1
               name: alice
@@ -34,6 +46,12 @@ projects:
               birthday: "2012-01-01"
               skillNum: 3
               created_at: '2022-01-01T12:00:00'
+              age: 25
+              birth_date: '1998-06-15'
+              wake_time: '07:30:00'
+              score: 95.5
+              active: true
+              metadata: '{"level": "senior"}'
             - id: 2
               name: bob
               structarr:
@@ -42,6 +60,24 @@ projects:
               birthday: "2007-02-01"
               skillNum: 5
               created_at: '2022-01-02T18:00:00'
+              age: 30
+              birth_date: '1993-12-20'
+              wake_time: '08:00:00'
+              score: 87.3
+              active: false
+              metadata: '{"level": "junior"}'
+            - id: 3
+              name: charlie
+              structarr: []
+              birthday: null
+              skillNum: null
+              created_at: null
+              age: null
+              birth_date: null
+              wake_time: null
+              score: null
+              active: null
+              metadata: null
         - id: table_b
           columns:
             - name: num

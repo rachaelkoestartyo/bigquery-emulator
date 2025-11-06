@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/apache/arrow/go/v10/arrow/array"
+	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/goccy/bigquery-emulator/types"
 	"github.com/goccy/go-zetasqlite"
 	bigqueryv2 "google.golang.org/api/bigquery/v2"
@@ -112,11 +112,35 @@ func (c *TableCell) AVROValue(schema *types.AVROFieldSchema) (interface{}, error
 	switch v := c.V.(type) {
 	case TableRow:
 		fields := types.TableFieldSchemasToAVRO(schema.Type.TypeSchema.Fields)
-		return v.AVROValue(fields)
+		structValue, err := v.AVROValue(fields)
+		if err != nil {
+			return nil, err
+		}
+		// For nullable structs (not REQUIRED mode), wrap in union format
+		if types.Mode(schema.Type.TypeSchema.Mode) != types.RequiredMode {
+			return map[string]interface{}{schema.Type.Key(): structValue}, nil
+		}
+		return structValue, nil
 	case []*TableCell:
 		ret := make([]interface{}, 0, len(v))
+		// For repeated fields, we need to create an element schema that represents
+		// the individual array elements, not the parent array field
+		// In AVRO, array elements are REQUIRED (not wrapped in unions), but their
+		// inner fields can be nullable
+		elementSchema := &types.AVROFieldSchema{
+			Name: schema.Name,
+			Type: &types.AVROType{
+				TypeSchema: &bigqueryv2.TableFieldSchema{
+					Name:   schema.Type.TypeSchema.Name,
+					Type:   schema.Type.TypeSchema.Type,
+					Mode:   "REQUIRED", // Array elements themselves are required, not nullable unions
+					Fields: schema.Type.TypeSchema.Fields,
+				},
+				Namespace: schema.Type.Namespace, // Preserve namespace for nested records
+			},
+		}
 		for _, vv := range v {
-			avrov, err := vv.AVROValue(schema)
+			avrov, err := vv.AVROValue(elementSchema)
 			if err != nil {
 				return nil, err
 			}
@@ -131,7 +155,9 @@ func (c *TableCell) AVROValue(schema *types.AVROFieldSchema) (interface{}, error
 		if !ok {
 			return nil, fmt.Errorf("failed to cast to string from %s", v)
 		}
-		value, err := schema.Type.CastValue(text)
+		// Use AVROPrimitiveValue for AVRO encoding (returns AVRO primitive types)
+		// instead of CastValue (which returns Go native types)
+		value, err := schema.Type.AVROPrimitiveValue(text)
 		if err != nil {
 			return nil, err
 		}
@@ -174,9 +200,10 @@ func (c *TableCell) AppendValueToARROWBuilder(builder array.Builder) error {
 		if !ok {
 			return fmt.Errorf("failed to convert to list builder from %T", builder)
 		}
+		// Append once per row (list), not per element
+		listBuilder.Append(true)
 		b := listBuilder.ValueBuilder()
 		for _, vv := range v {
-			listBuilder.Append(true)
 			if err := vv.AppendValueToARROWBuilder(b); err != nil {
 				return err
 			}

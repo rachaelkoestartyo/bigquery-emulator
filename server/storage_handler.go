@@ -10,10 +10,10 @@ import (
 	"time"
 
 	storagepb "cloud.google.com/go/bigquery/storage/apiv1/storagepb"
-	"github.com/apache/arrow/go/v10/arrow"
-	"github.com/apache/arrow/go/v10/arrow/array"
-	"github.com/apache/arrow/go/v10/arrow/ipc"
-	"github.com/apache/arrow/go/v10/arrow/memory"
+	"github.com/apache/arrow-go/v18/arrow"
+	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/apache/arrow-go/v18/arrow/ipc"
+	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/goccy/go-json"
 	goavro "github.com/linkedin/goavro/v2"
 	bigqueryv2 "google.golang.org/api/bigquery/v2"
@@ -69,6 +69,8 @@ type ARROWSchema struct {
 	Text              string
 }
 
+const SUPPORTED_STREAM_COUNT = 1
+
 func (s *storageReadServer) CreateReadSession(ctx context.Context, req *storagepb.CreateReadSessionRequest) (*storagepb.ReadSession, error) {
 	sessionID := randomID()
 	sessionName := fmt.Sprintf("%s/locations/%s/sessions/%s", req.Parent, "location", sessionID)
@@ -80,12 +82,13 @@ func (s *storageReadServer) CreateReadSession(ctx context.Context, req *storagep
 	if err != nil {
 		return nil, fmt.Errorf("failed to get table metadata: %w", err)
 	}
+	if req.MaxStreamCount > SUPPORTED_STREAM_COUNT {
+		return nil, fmt.Errorf("currently supports only %d stream(s)", SUPPORTED_STREAM_COUNT)
+	}
+	req.MaxStreamCount = SUPPORTED_STREAM_COUNT
 	streams := make([]*storagepb.ReadStream, 0, req.MaxStreamCount)
 	streamID := randomID()
 	streamName := fmt.Sprintf("%s/streams/%s", sessionName, streamID)
-	if req.MaxStreamCount > 1 {
-		return nil, fmt.Errorf("currently supported only one stream")
-	}
 	for i := int32(0); i < req.MaxStreamCount; i++ {
 		streams = append(streams, &storagepb.ReadStream{
 			Name: streamName,
@@ -102,8 +105,12 @@ func (s *storageReadServer) CreateReadSession(ctx context.Context, req *storagep
 		TableModifiers:             req.ReadSession.TableModifiers,
 		TraceId:                    req.ReadSession.TraceId,
 	}
-	outputColumns := req.ReadSession.ReadOptions.SelectedFields
-	condition := req.ReadSession.ReadOptions.RowRestriction
+	var outputColumns []string
+	var condition string
+	if req.ReadSession.ReadOptions != nil {
+		outputColumns = req.ReadSession.ReadOptions.SelectedFields
+		condition = req.ReadSession.ReadOptions.RowRestriction
+	}
 	outputColumnMap := map[string]struct{}{}
 	for _, outputColumn := range outputColumns {
 		outputColumnMap[outputColumn] = struct{}{}
@@ -262,7 +269,9 @@ func (s *storageReadServer) sendAVRORows(status *readStreamStatus, response *int
 		}
 		b, err := codec.BinaryFromNative(buf, value)
 		if err != nil {
-			return fmt.Errorf("failed to encode binary from go value: %w", err)
+			// On error, dump the value that failed
+			valueJSON, _ := json.MarshalIndent(value, "", "  ")
+			return fmt.Errorf("failed to encode binary from go value (value=%s): %w", valueJSON, err)
 		}
 		buf = b
 	}
@@ -319,18 +328,39 @@ func (s *storageReadServer) getARROWSchema(tableMetadata *bigqueryv2.Table, outp
 func (s *storageReadServer) getSerializedARROWSchema(schema *arrow.Schema) ([]byte, error) {
 	mem := memory.NewGoAllocator()
 	buf := new(bytes.Buffer)
+	// Write a minimal IPC stream to extract just the schema message
 	writer := ipc.NewWriter(buf, ipc.WithAllocator(mem), ipc.WithSchema(schema))
+	defer writer.Close()
+	// Write an empty record to produce a complete IPC stream with schema
 	builder := array.NewRecordBuilder(mem, schema)
 	defer builder.Release()
 	record := builder.NewRecord()
+	defer record.Release()
 	if err := writer.Write(record); err != nil {
 		return nil, err
 	}
-	record.Release()
 	if err := writer.Close(); err != nil {
 		return nil, err
 	}
-	return buf.Bytes(), nil
+
+	// Extract only the schema message from the stream
+	// The stream format is: [schema message] [empty record batch message + body] [EOS]
+	// We only want the schema message part
+	streamBytes := buf.Bytes()
+	reader := bytes.NewReader(streamBytes)
+	messageReader := ipc.NewMessageReader(reader, ipc.WithAllocator(mem))
+
+	// Read the schema message
+	_, err := messageReader.Message()
+	if err != nil {
+		return nil, err
+	}
+
+	// Get the position after the schema message
+	schemaEndPos, _ := reader.Seek(0, io.SeekCurrent)
+
+	// Return only the schema message bytes
+	return streamBytes[:schemaEndPos], nil
 }
 
 func (s *storageReadServer) sendARROWRows(status *readStreamStatus, response *internaltypes.QueryResponse, stream storagepb.BigQueryRead_ReadRowsServer) error {
@@ -347,18 +377,55 @@ func (s *storageReadServer) sendARROWRows(status *readStreamStatus, response *in
 		}
 	}
 	record := builder.NewRecord()
+	defer record.Release()
+
+	// First, write the full stream to extract the record batch message
 	buf := new(bytes.Buffer)
 	writer := ipc.NewWriter(buf, ipc.WithAllocator(mem), ipc.WithSchema(status.arrowSchema))
 	if err := writer.Write(record); err != nil {
 		return err
 	}
-	record.Release()
 	if err := writer.Close(); err != nil {
 		return err
 	}
+
+	// Now extract just the record batch portion from the stream
+	// The IPC stream format is: [schema message] [record batch message + body] [EOS marker]
+	// We need to extract only the record batch (message + body), excluding both schema and EOS
+	streamBytes := buf.Bytes()
+	reader := bytes.NewReader(streamBytes)
+	messageReader := ipc.NewMessageReader(reader, ipc.WithAllocator(mem))
+
+	// Skip the schema message
+	schemaMsg, err := messageReader.Message()
+	if err != nil {
+		return err
+	}
+	if schemaMsg.Type() != ipc.MessageSchema {
+		return fmt.Errorf("expected schema message, got %v", schemaMsg.Type())
+	}
+
+	// Get the position after the schema message
+	schemaEndPos, _ := reader.Seek(0, io.SeekCurrent)
+
+	// Read the record batch message to find where it ends
+	batchMsg, err := messageReader.Message()
+	if err != nil {
+		return err
+	}
+	if batchMsg.Type() != ipc.MessageRecordBatch {
+		return fmt.Errorf("expected record batch message, got %v", batchMsg.Type())
+	}
+
+	// Get the position after the record batch (message + body)
+	batchEndPos, _ := reader.Seek(0, io.SeekCurrent)
+
+	// Extract just the record batch bytes (message + body), without EOS marker
+	recordBatchBytes := streamBytes[schemaEndPos:batchEndPos]
+
 	rows := &storagepb.ReadRowsResponse_ArrowRecordBatch{
 		ArrowRecordBatch: &storagepb.ArrowRecordBatch{
-			SerializedRecordBatch: buf.Bytes(),
+			SerializedRecordBatch: recordBatchBytes,
 			RowCount:              int64(response.TotalRows),
 		},
 	}
@@ -518,6 +585,7 @@ func (s *storageWriteServer) appendRows(req *storagepb.AppendRowsRequest, msgDes
 		})
 		if err != nil {
 			s.sendErrorMessage(stream, streamName, err)
+			return err
 		}
 	} else {
 		status.rows = append(status.rows, data...)
@@ -788,16 +856,6 @@ func (s *storageWriteServer) createDefaultStream(ctx context.Context, req *stora
 		return nil, fmt.Errorf("unexpected stream id: %s, expected containg '%s'", streamId, streams)
 	}
 	streamPart := streamId[:index]
-	writeStreamReq := &storagepb.CreateWriteStreamRequest{
-		Parent: streamPart,
-		WriteStream: &storagepb.WriteStream{
-			Type: storagepb.WriteStream_COMMITTED,
-		},
-	}
-	stream, err := s.CreateWriteStream(ctx, writeStreamReq)
-	if err != nil {
-		return nil, err
-	}
 	projectID, datasetID, tableID, err := getIDsFromPath(streamPart)
 	if err != nil {
 		return nil, err
@@ -806,6 +864,19 @@ func (s *storageWriteServer) createDefaultStream(ctx context.Context, req *stora
 	if err != nil {
 		return nil, err
 	}
+
+	// Create the default stream directly without calling CreateWriteStream to avoid duplicate map entries
+	createTime := timestamppb.New(time.Now())
+	schema := types.TableToProto(tableMetadata)
+	stream := &storagepb.WriteStream{
+		Name:        streamId,
+		Type:        storagepb.WriteStream_COMMITTED,
+		CreateTime:  createTime,
+		CommitTime:  createTime,
+		TableSchema: schema,
+		WriteMode:   storagepb.WriteStream_INSERT,
+	}
+
 	streamStatus := &writeStreamStatus{
 		streamType:    storagepb.WriteStream_COMMITTED,
 		stream:        stream,
