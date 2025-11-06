@@ -856,16 +856,6 @@ func (s *storageWriteServer) createDefaultStream(ctx context.Context, req *stora
 		return nil, fmt.Errorf("unexpected stream id: %s, expected containg '%s'", streamId, streams)
 	}
 	streamPart := streamId[:index]
-	writeStreamReq := &storagepb.CreateWriteStreamRequest{
-		Parent: streamPart,
-		WriteStream: &storagepb.WriteStream{
-			Type: storagepb.WriteStream_COMMITTED,
-		},
-	}
-	stream, err := s.CreateWriteStream(ctx, writeStreamReq)
-	if err != nil {
-		return nil, err
-	}
 	projectID, datasetID, tableID, err := getIDsFromPath(streamPart)
 	if err != nil {
 		return nil, err
@@ -874,6 +864,19 @@ func (s *storageWriteServer) createDefaultStream(ctx context.Context, req *stora
 	if err != nil {
 		return nil, err
 	}
+
+	// Create the default stream directly without calling CreateWriteStream to avoid duplicate map entries
+	createTime := timestamppb.New(time.Now())
+	schema := types.TableToProto(tableMetadata)
+	stream := &storagepb.WriteStream{
+		Name:        streamId,
+		Type:        storagepb.WriteStream_COMMITTED,
+		CreateTime:  createTime,
+		CommitTime:  createTime,
+		TableSchema: schema,
+		WriteMode:   storagepb.WriteStream_INSERT,
+	}
+
 	streamStatus := &writeStreamStatus{
 		streamType:    storagepb.WriteStream_COMMITTED,
 		stream:        stream,
