@@ -1430,7 +1430,7 @@ func (h *jobsInsertHandler) copyFromBigQuery(ctx context.Context, r *jobsInsertR
 	enc := json.NewEncoder(tmpf)
 	var schema *bigqueryv2.TableSchema
 
-	r.server.connMgr.ExecuteWithTransaction(ctx, func(ctx context.Context, tx *connection.Tx) error {
+	err = r.server.connMgr.ExecuteWithTransaction(ctx, func(ctx context.Context, tx *connection.Tx) error {
 		response, err := r.server.contentRepo.Query(
 			ctx,
 			tx,
@@ -1459,6 +1459,9 @@ func (h *jobsInsertHandler) copyFromBigQuery(ctx context.Context, r *jobsInsertR
 
 		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
 
 	// Flush the data to the filesystem and rewind our cursor to the beginning
 	// of the file so that all content is readable by the load hanldler
@@ -1533,7 +1536,7 @@ func (h *jobsInsertHandler) copyFromBigQuery(ctx context.Context, r *jobsInsertR
 		//
 		// I think this is still presenting correct behavior to the
 		// user because if the upload handler failed, we'd report it.
-		r.server.connMgr.ExecuteWithTransaction(ctx, func(ctx context.Context, tx *connection.Tx) error {
+		err = r.server.connMgr.ExecuteWithTransaction(ctx, func(ctx context.Context, tx *connection.Tx) error {
 			err = r.project.AddJob(
 				ctx,
 				tx.Tx(),
@@ -1553,6 +1556,9 @@ func (h *jobsInsertHandler) copyFromBigQuery(ctx context.Context, r *jobsInsertR
 
 			return err
 		})
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	return job, nil
