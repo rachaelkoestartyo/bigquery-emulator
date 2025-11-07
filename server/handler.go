@@ -1427,37 +1427,38 @@ func (h *jobsInsertHandler) copyFromBigQuery(ctx context.Context, r *jobsInsertR
 	}
 	defer os.Remove(tmpf.Name())
 
-	conn := connectionFromContext(ctx).ConfigureScope(r.project.ID, "")
-	tx, err := conn.Begin(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to start transaction: %w", err)
-	}
-	defer tx.RollbackIfNotCommitted()
-
-	response, err := r.server.contentRepo.Query(
-		ctx,
-		tx,
-		srcTable.ProjectId,
-		srcTable.DatasetId,
-		fmt.Sprintf("SELECT * FROM `%s`", srcTable.TableId),
-		nil,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to execute copy query: %w", err)
-	}
-
 	enc := json.NewEncoder(tmpf)
-	for _, row := range response.Rows {
-		rowData, err := row.Data()
+	var schema *bigqueryv2.TableSchema
+
+	r.server.connMgr.ExecuteWithTransaction(ctx, func(ctx context.Context, tx *connection.Tx) error {
+		response, err := r.server.contentRepo.Query(
+			ctx,
+			tx,
+			srcTable.ProjectId,
+			srcTable.DatasetId,
+			fmt.Sprintf("SELECT * FROM `%s`", srcTable.TableId),
+			nil,
+		)
 		if err != nil {
-			return nil, fmt.Errorf("failed to get data from table row: %w", err)
+			return fmt.Errorf("failed to execute copy query: %w", err)
 		}
 
-		err = enc.Encode(rowData)
-		if err != nil {
-			return nil, fmt.Errorf("failed to encode table row as JSON: %w", err)
+		for _, row := range response.Rows {
+			rowData, err := row.Data()
+			if err != nil {
+				return fmt.Errorf("failed to get data from table row: %w", err)
+			}
+
+			err = enc.Encode(rowData)
+			if err != nil {
+				return fmt.Errorf("failed to encode table row as JSON: %w", err)
+			}
 		}
-	}
+
+		schema = response.Schema
+
+		return nil
+	})
 
 	// Flush the data to the filesystem and rewind our cursor to the beginning
 	// of the file so that all content is readable by the load hanldler
@@ -1469,11 +1470,6 @@ func (h *jobsInsertHandler) copyFromBigQuery(ctx context.Context, r *jobsInsertR
 		return nil, fmt.Errorf("failed to seek to beginning of file: %w", err)
 	}
 
-	// We're not really committing anything here, but unless we close the
-	// transaction, the content DB can remain locked and won't be able to handle
-	// updates in the upload handler below.
-	tx.Commit()
-
 	// Create a load job rather than passing our copy job into the upload
 	// handler. We do this so that we don't have to teach the upload handler
 	// how to handle copy jobs (which it really doesn't have to know about
@@ -1484,7 +1480,7 @@ func (h *jobsInsertHandler) copyFromBigQuery(ctx context.Context, r *jobsInsertR
 			Load: &bigqueryv2.JobConfigurationLoad{
 				CreateDisposition: job.Configuration.Copy.CreateDisposition,
 				DestinationTable:  job.Configuration.Copy.DestinationTable,
-				Schema:            response.Schema,
+				Schema:            schema,
 				SourceFormat:      "NEWLINE_DELIMITED_JSON",
 				WriteDisposition:  job.Configuration.Copy.WriteDisposition,
 			},
@@ -1525,41 +1521,38 @@ func (h *jobsInsertHandler) copyFromBigQuery(ctx context.Context, r *jobsInsertR
 		EndTime:      time.Now().UnixMilli(),
 	}
 
-	// Not great!
-	//
-	// We need a transaction in order to persist our job information.
-	// Unfortunately the transaction that we were using above got closed
-	// (if it stayed open it would conflict with the upload handler) so now
-	// we have to create a new one. Even worse, committing the transaction
-	// closes the connection so we need a new one of those too.
-	//
-	// I think this is still presenting correct behavior to the user because
-	// if the upload handler failed, we'd report it.
-	conn = connectionFromContext(ctx).ConfigureScope(r.project.ID, "")
-	tx, err = conn.Begin(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to start transaction: %w", err)
-	}
-	defer tx.RollbackIfNotCommitted()
-
-	if err := r.project.AddJob(
-		ctx,
-		tx.Tx(),
-		metadata.NewJob(
-			r.server.metaRepo,
-			r.project.ID,
-			job.JobReference.JobId,
-			job,
-			nil,
-			nil,
-		),
-	); err != nil {
-		return nil, fmt.Errorf("failed to add job: %w", err)
-	}
 	if !job.Configuration.DryRun {
-		if err := tx.Commit(); err != nil {
-			return nil, fmt.Errorf("failed to commit job: %w", err)
-		}
+		// Not great!
+		//
+		// We need a transaction in order to persist our job
+		// information.  Unfortunately the transaction that we were
+		// using above got closed (if it stayed open it would conflict
+		// with the upload handler) so now we have to create a new one.
+		// Even worse, committing the transaction closes the connection
+		// so we need a new one of those too.
+		//
+		// I think this is still presenting correct behavior to the
+		// user because if the upload handler failed, we'd report it.
+		r.server.connMgr.ExecuteWithTransaction(ctx, func(ctx context.Context, tx *connection.Tx) error {
+			err = r.project.AddJob(
+				ctx,
+				tx.Tx(),
+				metadata.NewJob(
+					r.server.metaRepo,
+					r.project.ID,
+					job.JobReference.JobId,
+					job,
+					nil,
+					nil,
+				),
+			)
+
+			if err != nil {
+				err = fmt.Errorf("failed to add job: %w", err)
+			}
+
+			return err
+		})
 	}
 
 	return job, nil
