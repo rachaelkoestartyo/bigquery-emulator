@@ -147,13 +147,6 @@ func tableFieldSchemaFromColumn(c *Column) *bigqueryv2.TableFieldSchema {
 	}
 }
 
-// NormalizeTableFieldSchema normalizes type aliases (INT64→INTEGER, FLOAT64→FLOAT, etc.)
-// to their canonical forms by round-tripping through Column type which uses FieldType()
-func NormalizeTableFieldSchema(schema *bigqueryv2.TableFieldSchema) *bigqueryv2.TableFieldSchema {
-	col := NewColumnWithSchema(schema)
-	return tableFieldSchemaFromColumn(col)
-}
-
 type Job struct {
 	ID       string                 `json:"id" yaml:"id" validate:"required"`
 	Metadata map[string]interface{} `json:"metadata" yaml:"metadata"`

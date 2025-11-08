@@ -1467,8 +1467,8 @@ func TestStorageReadAVROWithAPICreatedTable(t *testing.T) {
 }
 
 func TestStorageReadAVROWithINT64Type(t *testing.T) {
-	// This test reproduces the Python client issue where tables have INT64 type names
-	// instead of INTEGER, which causes AVRO marshaling to fail
+	// This test reproduces the case where tables are created using aliased type names
+	// and ensures that the corresponding FieldTypes are used in the AVRO serializer
 	const (
 		projectID = "test"
 		datasetID = "test_dataset"
@@ -1541,14 +1541,6 @@ func TestStorageReadAVROWithINT64Type(t *testing.T) {
 	}
 	t.Logf("Stored type for int_col: %s (should be INTEGER, not INT64)", retrievedTable.Schema.Fields[0].Type)
 	t.Logf("Stored type for struct_col.field1: %s (should be INTEGER, not INT64)", retrievedTable.Schema.Fields[2].Fields[0].Type)
-
-	// Verify normalization happened
-	if retrievedTable.Schema.Fields[0].Type != "INTEGER" {
-		t.Errorf("Expected int_col type to be normalized to INTEGER, got %s", retrievedTable.Schema.Fields[0].Type)
-	}
-	if retrievedTable.Schema.Fields[2].Fields[0].Type != "INTEGER" {
-		t.Errorf("Expected struct_col.field1 type to be normalized to INTEGER, got %s", retrievedTable.Schema.Fields[2].Fields[0].Type)
-	}
 
 	// Insert a row using high-level client
 	bqClient, err := bigquery.NewClient(ctx, projectID, option.WithEndpoint(testServer.URL), option.WithoutAuthentication())

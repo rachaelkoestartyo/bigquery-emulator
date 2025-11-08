@@ -31,7 +31,7 @@ type AVROType struct {
 }
 
 func (t *AVROType) Key() string {
-	switch FieldType(t.TypeSchema.Type) {
+	switch Type(t.TypeSchema.Type).FieldType() {
 	case FieldInteger:
 		return "long"
 	case FieldBoolean:
@@ -73,7 +73,7 @@ func (t *AVROType) Key() string {
 }
 
 func (t *AVROType) CastValue(v string) (interface{}, error) {
-	switch FieldType(t.TypeSchema.Type) {
+	switch Type(t.TypeSchema.Type).FieldType() {
 	case FieldInteger:
 		return strconv.ParseInt(v, 10, 64)
 	case FieldBoolean:
@@ -114,7 +114,7 @@ func (t *AVROType) CastValue(v string) (interface{}, error) {
 // for encoding. Unlike CastValue which returns Go native types, this returns
 // the underlying AVRO primitive type (string, int, long, bytes) that goavro expects.
 func (t *AVROType) AVROPrimitiveValue(v string) (interface{}, error) {
-	switch FieldType(t.TypeSchema.Type) {
+	switch Type(t.TypeSchema.Type).FieldType() {
 	case FieldInteger:
 		return strconv.ParseInt(v, 10, 64)
 	case FieldBoolean:
@@ -202,7 +202,7 @@ func (t *AVROType) MarshalJSON() ([]byte, error) {
 }
 
 func marshalAVROType(t *bigqueryv2.TableFieldSchema) ([]byte, error) {
-	switch FieldType(t.Type) {
+	switch Type(t.Type).FieldType() {
 	case FieldInteger:
 		return []byte(`"long"`), nil
 	case FieldBoolean:
