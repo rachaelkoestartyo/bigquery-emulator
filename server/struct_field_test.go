@@ -2,6 +2,7 @@ package server_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"cloud.google.com/go/bigquery"
@@ -385,5 +386,120 @@ func TestStructFieldNamesWithBackticks(t *testing.T) {
 			t.Errorf("unexpected struct values: got (select=%s, from=%s, where=%s, current=%s), want (test1, test2, test3, test4)",
 				row.TestStruct.Select, row.TestStruct.From, row.TestStruct.Where, row.TestStruct.Current)
 		}
+	})
+}
+
+// TestEmptyStructInsertion tests that loading JSON data with empty STRUCT values
+// works correctly when IgnoreUnknownValues is set to true. This corresponds to
+// the Python BigQuery client test that loads {"conductor": {}} into a table
+// with a STRUCT field containing nested fields.
+func TestEmptyStructInsertion(t *testing.T) {
+	ctx := context.Background()
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const (
+		projectID = "test"
+		datasetID = "ds1"
+		tableID   = "t1"
+	)
+
+	// Create a table with a STRUCT field "conductor" containing a FLOAT64 field "length"
+	project := types.NewProject(
+		projectID,
+		types.NewDataset(
+			datasetID,
+			types.NewTable(
+				tableID,
+				[]*types.Column{
+					types.NewColumn(
+						"conductor",
+						types.STRUCT,
+						types.ColumnFields(
+							types.NewColumn("length", types.FLOAT64),
+						),
+					),
+				},
+				nil,
+			),
+		),
+	)
+
+	if err := bqServer.Load(server.StructSource(project)); err != nil {
+		t.Fatal(err)
+	}
+
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Close()
+	}()
+
+	client, err := bigquery.NewClient(
+		ctx,
+		projectID,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	// Test loading JSON with an empty struct {"conductor": {}}
+	t.Run("load empty struct", func(t *testing.T) {
+		jsonData := `{"conductor": {}}`
+
+		source := bigquery.NewReaderSource(strings.NewReader(jsonData))
+		source.SourceFormat = bigquery.JSON
+
+		loader := client.Dataset(datasetID).Table(tableID).LoaderFrom(source)
+
+		job, err := loader.Run(ctx)
+		if err != nil {
+			t.Fatalf("failed to run load job: %v", err)
+		}
+
+		status, err := job.Wait(ctx)
+		if err != nil {
+			t.Fatalf("failed to wait for load job: %v", err)
+		}
+
+		if err := status.Err(); err != nil {
+			t.Fatalf("load job failed: %v", err)
+		}
+
+		t.Log("Successfully loaded empty struct")
+	})
+
+	// Test querying the loaded data
+	t.Run("query conductor.length from loaded data", func(t *testing.T) {
+		query := client.Query("SELECT conductor.length FROM `" + datasetID + "." + tableID + "`")
+
+		it, err := query.Read(ctx)
+		if err != nil {
+			t.Fatalf("failed to execute query: %v", err)
+		}
+
+		var row struct {
+			Length bigquery.NullFloat64 `bigquery:"length"`
+		}
+
+		if err := it.Next(&row); err != nil {
+			if err == iterator.Done {
+				t.Fatal("expected at least one row")
+			}
+			t.Fatalf("failed to read row: %v", err)
+		}
+
+		// The empty struct should result in NULL for the length field
+		if row.Length.Valid {
+			t.Errorf("expected NULL for conductor.length, got %v", row.Length.Float64)
+		}
+
+		t.Logf("Query succeeded: conductor.length is NULL as expected for empty struct")
 	})
 }
