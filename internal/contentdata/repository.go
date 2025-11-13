@@ -251,7 +251,7 @@ func (r *Repository) Query(ctx context.Context, tx *connection.Tx, projectID, da
 				// GoogleSQL for BigQuery translates a NULL array into an empty array in the query result
 				v = []interface{}{}
 			}
-			cell, err := r.convertValueToCell(v)
+			cell, err := r.convertValueToCell(v, fields[idx])
 			if err != nil {
 				return nil, fmt.Errorf("failed to convert value to cell: %w", err)
 			}
@@ -307,48 +307,82 @@ func (r *Repository) queryParameterValueToGoValue(value *bigqueryv2.QueryParamet
 	return value.Value, nil
 }
 
-// zetasqlite returns []map[string]interface{} value as struct value, also returns []interface{} value as array value.
+// zetasqlite returns map[string]interface{} value as struct value, also returns []interface{} value as array value.
 // we need to convert them to specifically TableRow and TableCell type.
-func (r *Repository) convertValueToCell(value interface{}) (*internaltypes.TableCell, error) {
+// schema provides the field ordering for struct types to ensure deterministic field order.
+func (r *Repository) convertValueToCell(value interface{}, schema *bigqueryv2.TableFieldSchema) (*internaltypes.TableCell, error) {
 	if value == nil {
 		return &internaltypes.TableCell{V: nil}, nil
 	}
 	rv := reflect.ValueOf(value)
 	kind := rv.Type().Kind()
-	if kind != reflect.Slice && kind != reflect.Array {
-		v := fmt.Sprint(value)
-		return &internaltypes.TableCell{V: v, Bytes: int64(len(v))}, nil
-	}
-	elemType := rv.Type().Elem()
-	if elemType.Kind() == reflect.Map {
+	if kind == reflect.Map {
 		// value is struct type
 		var (
 			cells      []*internaltypes.TableCell
 			totalBytes int64
 		)
-		for i := 0; i < rv.Len(); i++ {
-			fieldV := rv.Index(i)
-			keys := fieldV.MapKeys()
-			if len(keys) != 1 {
-				return nil, fmt.Errorf("unexpected key number of field map value. expected 1 but got %d", len(keys))
+
+		// Build a map of field values for quick lookup
+		fieldValues := make(map[string]reflect.Value)
+		keys := rv.MapKeys()
+		for _, key := range keys {
+			fieldValues[key.Interface().(string)] = rv.MapIndex(key)
+		}
+
+		// Process fields in schema order to ensure deterministic ordering
+		// (Go map iteration order is randomized)
+		if schema != nil && schema.Fields != nil {
+			for _, fieldSchema := range schema.Fields {
+				fieldValue, exists := fieldValues[fieldSchema.Name]
+				if !exists {
+					// Field not present in data, skip it
+					continue
+				}
+				cell, err := r.convertValueToCell(fieldValue.Interface(), fieldSchema)
+				if err != nil {
+					return nil, err
+				}
+				cell.Name = fieldSchema.Name
+				totalBytes += cell.Bytes
+				cells = append(cells, cell)
 			}
-			cell, err := r.convertValueToCell(fieldV.MapIndex(keys[0]).Interface())
-			if err != nil {
-				return nil, err
+		} else {
+			// Fallback: no schema available, process in arbitrary order
+			for _, key := range keys {
+				cell, err := r.convertValueToCell(rv.MapIndex(key).Interface(), nil)
+				if err != nil {
+					return nil, err
+				}
+				cell.Name = key.Interface().(string)
+				totalBytes += cell.Bytes
+				cells = append(cells, cell)
 			}
-			cell.Name = keys[0].Interface().(string)
-			totalBytes += cell.Bytes
-			cells = append(cells, cell)
 		}
 		return &internaltypes.TableCell{V: internaltypes.TableRow{F: cells}, Bytes: totalBytes}, nil
+	}
+	if kind != reflect.Slice && kind != reflect.Array {
+		v := fmt.Sprint(value)
+		return &internaltypes.TableCell{V: v, Bytes: int64(len(v))}, nil
 	}
 	// array type
 	var (
 		cells            = []*internaltypes.TableCell{}
 		totalBytes int64 = 0
 	)
+	// For array elements, schema.Type will be the element type (e.g., STRUCT for array of structs)
+	// and schema.Fields will contain the struct fields
+	var elementSchema *bigqueryv2.TableFieldSchema
+	if schema != nil {
+		elementSchema = &bigqueryv2.TableFieldSchema{
+			Name:   schema.Name,
+			Type:   schema.Type,
+			Mode:   "NULLABLE", // Array elements can be nullable
+			Fields: schema.Fields,
+		}
+	}
 	for i := 0; i < rv.Len(); i++ {
-		cell, err := r.convertValueToCell(rv.Index(i).Interface())
+		cell, err := r.convertValueToCell(rv.Index(i).Interface(), elementSchema)
 		if err != nil {
 			return nil, err
 		}

@@ -71,9 +71,20 @@ func (r *TableRow) Data() (map[string]interface{}, error) {
 }
 
 func (r *TableRow) AVROValue(fields []*types.AVROFieldSchema) (map[string]interface{}, error) {
+	// Create a map of field names to schemas for efficient lookup
+	// This is necessary because r.F may have fields in a different order than the schema
+	fieldSchemaMap := make(map[string]*types.AVROFieldSchema, len(fields))
+	for _, field := range fields {
+		fieldSchemaMap[field.Name] = field
+	}
+
 	rowMap := map[string]interface{}{}
-	for idx, cell := range r.F {
-		v, err := cell.AVROValue(fields[idx])
+	for _, cell := range r.F {
+		fieldSchema, ok := fieldSchemaMap[cell.Name]
+		if !ok {
+			return nil, fmt.Errorf("field %q not found in schema", cell.Name)
+		}
+		v, err := cell.AVROValue(fieldSchema)
 		if err != nil {
 			return nil, err
 		}
