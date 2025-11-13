@@ -307,7 +307,7 @@ func (r *Repository) queryParameterValueToGoValue(value *bigqueryv2.QueryParamet
 	return value.Value, nil
 }
 
-// zetasqlite returns []map[string]interface{} value as struct value, also returns []interface{} value as array value.
+// zetasqlite returns map[string]interface{} value as struct value, also returns []interface{} value as array value.
 // we need to convert them to specifically TableRow and TableCell type.
 func (r *Repository) convertValueToCell(value interface{}) (*internaltypes.TableCell, error) {
 	if value == nil {
@@ -315,32 +315,27 @@ func (r *Repository) convertValueToCell(value interface{}) (*internaltypes.Table
 	}
 	rv := reflect.ValueOf(value)
 	kind := rv.Type().Kind()
-	if kind != reflect.Slice && kind != reflect.Array {
-		v := fmt.Sprint(value)
-		return &internaltypes.TableCell{V: v, Bytes: int64(len(v))}, nil
-	}
-	elemType := rv.Type().Elem()
-	if elemType.Kind() == reflect.Map {
+	if kind == reflect.Map {
 		// value is struct type
 		var (
 			cells      []*internaltypes.TableCell
 			totalBytes int64
 		)
-		for i := 0; i < rv.Len(); i++ {
-			fieldV := rv.Index(i)
-			keys := fieldV.MapKeys()
-			if len(keys) != 1 {
-				return nil, fmt.Errorf("unexpected key number of field map value. expected 1 but got %d", len(keys))
-			}
-			cell, err := r.convertValueToCell(fieldV.MapIndex(keys[0]).Interface())
+		keys := rv.MapKeys()
+		for _, key := range keys {
+			cell, err := r.convertValueToCell(rv.MapIndex(key).Interface())
 			if err != nil {
 				return nil, err
 			}
-			cell.Name = keys[0].Interface().(string)
+			cell.Name = key.Interface().(string)
 			totalBytes += cell.Bytes
 			cells = append(cells, cell)
 		}
 		return &internaltypes.TableCell{V: internaltypes.TableRow{F: cells}, Bytes: totalBytes}, nil
+	}
+	if kind != reflect.Slice && kind != reflect.Array {
+		v := fmt.Sprint(value)
+		return &internaltypes.TableCell{V: v, Bytes: int64(len(v))}, nil
 	}
 	// array type
 	var (
