@@ -1,13 +1,17 @@
 package types
 
 import (
+	"encoding/base64"
 	"fmt"
+	"math/big"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/apache/arrow-go/v18/arrow/decimal128"
+	"github.com/apache/arrow-go/v18/arrow/decimal256"
 	"github.com/goccy/go-zetasqlite"
 	bigqueryv2 "google.golang.org/api/bigquery/v2"
 )
@@ -91,11 +95,12 @@ func tableFieldToARROW(f *bigqueryv2.TableFieldSchema) (*arrow.Field, error) {
 		}
 		return &arrow.Field{Name: f.Name, Type: arrow.StructOf(fields...)}, nil
 	case FieldNumeric:
-		// TODO: current arrow library doesn't support decimal type.
-		return &arrow.Field{Name: f.Name, Type: arrow.PrimitiveTypes.Float64}, nil
+		// NUMERIC is a DECIMAL with precision 38, scale 9
+		return &arrow.Field{Name: f.Name, Type: &arrow.Decimal128Type{Precision: 38, Scale: 9}}, nil
 	case FieldBignumeric:
-		// TODO: current arrow library doesn't support decimal type.
-		return &arrow.Field{Name: f.Name, Type: arrow.PrimitiveTypes.Float64}, nil
+		// BIGNUMERIC is a DECIMAL with precision 76, scale 38
+		// BigQuery supports 76.76 digits (76 full digits, 77th is partial)
+		return &arrow.Field{Name: f.Name, Type: &arrow.Decimal256Type{Precision: 76, Scale: 38}}, nil
 	case FieldGeography:
 		return &arrow.Field{Name: f.Name, Type: arrow.BinaryTypes.String}, nil
 	case FieldInterval:
@@ -136,7 +141,12 @@ func AppendValueToARROWBuilder(ptrv *string, builder array.Builder) error {
 		b.Append(v)
 		return nil
 	case *array.BinaryBuilder:
-		b.Append([]byte(v))
+		// Bytes are stored as base64 in BigQuery JSON API, decode to raw bytes
+		decoded, err := base64.StdEncoding.DecodeString(v)
+		if err != nil {
+			return fmt.Errorf("failed to decode base64 bytes: %w", err)
+		}
+		b.Append(decoded)
 		return nil
 	case *array.Date32Builder:
 		t, err := parseDate(v)
@@ -150,7 +160,7 @@ func AppendValueToARROWBuilder(ptrv *string, builder array.Builder) error {
 		if err != nil {
 			return err
 		}
-		b.Append(arrow.Time64(t.UnixMicro()))
+		b.Append(arrow.Time64(microsecondsSinceMidnight(t)))
 		return nil
 	case *array.TimestampBuilder:
 		// Handle datetime strings
@@ -169,6 +179,50 @@ func AppendValueToARROWBuilder(ptrv *string, builder array.Builder) error {
 			t = arrow.Timestamp(parsed.UnixMicro())
 		}
 		b.Append(t)
+		return nil
+	case *array.Decimal128Builder:
+		// NUMERIC type: precision 38, scale 9
+		// Parse the string value to a big.Rat, then convert to scaled integer
+		rat := new(big.Rat)
+		if _, ok := rat.SetString(v); !ok {
+			return fmt.Errorf("failed to parse decimal value: %s", v)
+		}
+
+		// Scale the value by 10^scale to get the integer representation
+		scale := int32(9)
+		scaleFactor := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(scale)), nil)
+
+		// Multiply the rational by the scale factor
+		scaled := new(big.Rat).Mul(rat, new(big.Rat).SetInt(scaleFactor))
+
+		// Convert to integer (this truncates any remaining fractional part)
+		scaledInt := new(big.Int).Div(scaled.Num(), scaled.Denom())
+
+		// Convert to decimal128.Num
+		num := decimal128.FromBigInt(scaledInt)
+		b.Append(num)
+		return nil
+	case *array.Decimal256Builder:
+		// BIGNUMERIC type: precision 77, scale 38
+		// Parse the string value to a big.Rat, then convert to scaled integer
+		rat := new(big.Rat)
+		if _, ok := rat.SetString(v); !ok {
+			return fmt.Errorf("failed to parse decimal value: %s", v)
+		}
+
+		// Scale the value by 10^scale to get the integer representation
+		scale := int32(38)
+		scaleFactor := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(scale)), nil)
+
+		// Multiply the rational by the scale factor
+		scaled := new(big.Rat).Mul(rat, new(big.Rat).SetInt(scaleFactor))
+
+		// Convert to integer (this truncates any remaining fractional part)
+		scaledInt := new(big.Int).Div(scaled.Num(), scaled.Denom())
+
+		// Convert to decimal256.Num
+		num := decimal256.FromBigInt(scaledInt)
+		b.Append(num)
 		return nil
 	}
 	return fmt.Errorf("unexpected builder type %T", builder)
