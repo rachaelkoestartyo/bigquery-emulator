@@ -14,3 +14,12 @@
 # Dependency directories (remove the comment below to include it)
 vendor/
 dist
+
+# Python files
+__pycache__
+
+# JetBrains IDE
+.idea
+
+# Mac files
+.DS_Store

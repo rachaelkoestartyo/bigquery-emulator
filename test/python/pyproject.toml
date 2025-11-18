@@ -1,0 +1,23 @@
+[project]
+name = "bigquery-emulator-tests"
+version = "0.1.0"
+description = "Integration test suite for the BigQuery emulator"
+readme = "README.md"
+requires-python = ">=3.11.11"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "attrs>=25.4.0",
+    "docker>=7.1.0",
+    "fastavro>=1.12.1",
+    "google-cloud-bigquery>=3.38.0",
+    "google-cloud-bigquery-storage>=2.34.0",
+    "more-itertools>=10.8.0",
+    "pandas>=2.3.3",
+    "pandas-gbq>=0.31.0",
+    "pyarrow>=22.0.0",
+    "pytest>=9.0.1",
+    "pytest-xdist>=3.8.0",
+    "pytz>=2025.2",
+]
