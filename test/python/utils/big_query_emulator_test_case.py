@@ -11,7 +11,6 @@ from unittest.mock import patch
 import grpc
 import numpy
 import pandas as pd
-import pytest
 import requests
 from google.api_core import retry
 from google.api_core.client_options import ClientOptions
@@ -64,7 +63,6 @@ def _fail_500(original_error: GoogleAPICallError) -> None:
 
 _fail_500_retry = retry.Retry(predicate=_fail_500)
 
-@pytest.mark.uses_bq_emulator
 class BigQueryEmulatorTestCase(unittest.TestCase):
     """An implementation of TestCase that can be used for tests that talk to the
     BigQuery emulator."""
