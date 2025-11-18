@@ -141,6 +141,8 @@ $ bq --api http://0.0.0.0:9050 query --project_id=test "SELECT * FROM dataset1.t
 
 ## How to use from python client
 
+> **For Python unit testing**: See the comprehensive [Python Testing Guide](test/python/README.md) for using the emulator with testcontainers, pytest fixtures, and `unittest.TestCase`.
+
 ### 1. Start the standalone server
 
 ```console

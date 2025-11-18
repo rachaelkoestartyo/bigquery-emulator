@@ -14,7 +14,7 @@ from google.cloud.bigquery_storage_v1.services.big_query_read.transports import 
     BigQueryReadGrpcTransport,
 )
 
-from utils.big_query_emulator_control import BQ_EMULATOR_PROJECT_ID
+from utils.big_query_emulator_container import BQ_EMULATOR_PROJECT_ID
 from utils.big_query_emulator_test_case import (
     BigQueryAddress,
     BigQueryEmulatorTestCase,
@@ -956,7 +956,7 @@ FROM UNNEST([
                 read_options=read_options,
             )
 
-            host = f"localhost:{self.control.grpc_port}"  # change port to whatever your local server uses
+            host = f"localhost:{self.emulator.grpc_port}"
 
             # Create an insecure gRPC channel
             channel = grpc.insecure_channel(host)
