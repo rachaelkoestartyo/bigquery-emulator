@@ -546,6 +546,13 @@ func parseTime(v string) (time.Time, error) {
 	return time.Parse("15:04:05.999999", v)
 }
 
+func microsecondsSinceMidnight(t time.Time) int64 {
+	return int64(t.Hour())*3_600_000_000 +
+		int64(t.Minute())*60_000_000 +
+		int64(t.Second())*1_000_000 +
+		int64(t.Nanosecond())/1_000
+}
+
 func parseDatetime(v string) (time.Time, error) {
 	if t, err := time.Parse("2006-01-02T15:04:05.999999", v); err == nil {
 		return t, nil

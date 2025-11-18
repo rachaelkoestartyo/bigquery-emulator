@@ -1285,185 +1285,351 @@ func TestDatetimeTimezoneNaive(t *testing.T) {
 	t.Log("Successfully validated that DATETIME values are timezone-naive in Arrow format")
 }
 
-func TestStorageReadAVROWithAPICreatedTable(t *testing.T) {
-	const (
-		projectID = "test"
-		datasetID = "test_dataset"
-		tableID   = "test_table"
-	)
+func TestStorageReadWithAPICreatedTable(t *testing.T) {
+	for _, format := range []struct {
+		name       string
+		dataFormat storagepb.DataFormat
+	}{
+		{name: "AVRO", dataFormat: storagepb.DataFormat_AVRO},
+		{name: "ARROW", dataFormat: storagepb.DataFormat_ARROW},
+	} {
+		t.Run(format.name, func(t *testing.T) {
+			const (
+				projectID = "test"
+				datasetID = "test_dataset"
+				tableID   = "test_table"
+			)
 
-	ctx := context.Background()
+			ctx := context.Background()
 
-	// Create empty server with just project and dataset
-	bqServer, err := server.New(server.TempStorage)
-	if err != nil {
-		t.Fatal(err)
-	}
-	project := types.NewProject(projectID, types.NewDataset(datasetID))
-	if err := bqServer.Load(server.StructSource(project)); err != nil {
-		t.Fatal(err)
-	}
-
-	testServer := bqServer.TestServer()
-	defer func() {
-		testServer.Close()
-		bqServer.Close()
-	}()
-
-	// Create BigQuery client
-	bqClient, err := bigquery.NewClient(
-		ctx,
-		projectID,
-		option.WithEndpoint(testServer.URL),
-		option.WithoutAuthentication(),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer bqClient.Close()
-
-	// Create table via API with schema that uses INT64 (not INTEGER)
-	// This reproduces the issue where BigQuery API returns INT64 type names
-	schema := bigquery.Schema{
-		{Name: "string_col", Type: bigquery.StringFieldType},
-		{Name: "int_col", Type: bigquery.IntegerFieldType},
-		{Name: "float_col", Type: bigquery.FloatFieldType},
-		{Name: "bool_col", Type: bigquery.BooleanFieldType},
-		{Name: "bytes_col", Type: bigquery.BytesFieldType},
-		{Name: "date_col", Type: bigquery.DateFieldType},
-		{Name: "datetime_col", Type: bigquery.DateTimeFieldType},
-		{Name: "timestamp_col", Type: bigquery.TimestampFieldType},
-		{Name: "time_col", Type: bigquery.TimeFieldType},
-		{Name: "numeric_col", Type: bigquery.NumericFieldType},
-		{Name: "bignumeric_col", Type: bigquery.BigNumericFieldType},
-		{Name: "array_col", Type: bigquery.StringFieldType, Repeated: true},
-		{
-			Name: "struct_col",
-			Type: bigquery.RecordFieldType,
-			Schema: bigquery.Schema{
-				{Name: "field1", Type: bigquery.IntegerFieldType},
-				{Name: "field2", Type: bigquery.StringFieldType},
-			},
-		},
-	}
-
-	table := bqClient.Dataset(datasetID).Table(tableID)
-	if err := table.Create(ctx, &bigquery.TableMetadata{Schema: schema}); err != nil {
-		t.Fatalf("failed to create table: %v", err)
-	}
-
-	// Check what type names are actually stored in the table metadata
-	metadata, err := table.Metadata(ctx)
-	if err != nil {
-		t.Fatalf("failed to get table metadata: %v", err)
-	}
-	t.Logf("Table schema after creation:")
-	for _, field := range metadata.Schema {
-		t.Logf("  Field: %s, Type: %s", field.Name, field.Type)
-		if field.Type == bigquery.RecordFieldType && field.Schema != nil {
-			for _, subfield := range field.Schema {
-				t.Logf("    Subfield: %s, Type: %s", subfield.Name, subfield.Type)
+			// Create empty server with just project and dataset
+			bqServer, err := server.New(server.TempStorage)
+			if err != nil {
+				t.Fatal(err)
 			}
-		}
+			project := types.NewProject(projectID, types.NewDataset(datasetID))
+			if err := bqServer.Load(server.StructSource(project)); err != nil {
+				t.Fatal(err)
+			}
+
+			testServer := bqServer.TestServer()
+			defer func() {
+				testServer.Close()
+				bqServer.Close()
+			}()
+
+			// Create BigQuery client
+			bqClient, err := bigquery.NewClient(
+				ctx,
+				projectID,
+				option.WithEndpoint(testServer.URL),
+				option.WithoutAuthentication(),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer bqClient.Close()
+
+			// Create table via API with schema that uses INT64 (not INTEGER)
+			// This reproduces the issue where BigQuery API returns INT64 type names
+			schema := bigquery.Schema{
+				{Name: "string_col", Type: bigquery.StringFieldType},
+				{Name: "int_col", Type: bigquery.IntegerFieldType},
+				{Name: "float_col", Type: bigquery.FloatFieldType},
+				{Name: "bool_col", Type: bigquery.BooleanFieldType},
+				{Name: "bytes_col", Type: bigquery.BytesFieldType},
+				{Name: "date_col", Type: bigquery.DateFieldType},
+				{Name: "datetime_col", Type: bigquery.DateTimeFieldType},
+				{Name: "timestamp_col", Type: bigquery.TimestampFieldType},
+				{Name: "time_col", Type: bigquery.TimeFieldType},
+				{Name: "numeric_col", Type: bigquery.NumericFieldType},
+				{Name: "bignumeric_col", Type: bigquery.BigNumericFieldType},
+				{Name: "array_col", Type: bigquery.StringFieldType, Repeated: true},
+				{
+					Name: "struct_col",
+					Type: bigquery.RecordFieldType,
+					Schema: bigquery.Schema{
+						{Name: "field1", Type: bigquery.IntegerFieldType},
+						{Name: "field2", Type: bigquery.StringFieldType},
+					},
+				},
+			}
+
+			table := bqClient.Dataset(datasetID).Table(tableID)
+			if err := table.Create(ctx, &bigquery.TableMetadata{Schema: schema}); err != nil {
+				t.Fatalf("failed to create table: %v", err)
+			}
+
+			// Check what type names are actually stored in the table metadata
+			metadata, err := table.Metadata(ctx)
+			if err != nil {
+				t.Fatalf("failed to get table metadata: %v", err)
+			}
+			t.Logf("Table schema after creation:")
+			for _, field := range metadata.Schema {
+				t.Logf("  Field: %s, Type: %s", field.Name, field.Type)
+				if field.Type == bigquery.RecordFieldType && field.Schema != nil {
+					for _, subfield := range field.Schema {
+						t.Logf("    Subfield: %s, Type: %s", subfield.Name, subfield.Type)
+					}
+				}
+			}
+
+			// Insert data - use string values for date/datetime to avoid import issues
+			type TestRow struct {
+				StringCol     string                 `bigquery:"string_col"`
+				IntCol        int64                  `bigquery:"int_col"`
+				FloatCol      float64                `bigquery:"float_col"`
+				BoolCol       bool                   `bigquery:"bool_col"`
+				BytesCol      []byte                 `bigquery:"bytes_col"`
+				DateCol       string                 `bigquery:"date_col"`
+				DatetimeCol   string                 `bigquery:"datetime_col"`
+				TimestampCol  time.Time              `bigquery:"timestamp_col"`
+				TimeCol       civil.Time             `bigquery:"time_col"`
+				NumericCol    string                 `bigquery:"numeric_col"`
+				BignumericCol string                 `bigquery:"bignumeric_col"`
+				ArrayCol      []string               `bigquery:"array_col"`
+				StructCol     map[string]interface{} `bigquery:"struct_col"`
+			}
+
+			testData := []TestRow{
+				{
+					StringCol:    "hello",
+					IntCol:       42,
+					FloatCol:     3.14,
+					BoolCol:      true,
+					BytesCol:     []byte("abc"),
+					DateCol:      "2024-01-01",
+					DatetimeCol:  "2024-01-01T12:00:00",
+					TimestampCol: time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC),
+					TimeCol:      civil.Time{Hour: 12},
+					NumericCol:   "123.456",
+					// BIGNUMERIC max: 38 integer digits, 38 fractional digits
+					BignumericCol: "12345678901234567890123456789012345678.12345678901234567890123456789012345678",
+					ArrayCol:      []string{"x", "y"},
+					StructCol:     map[string]interface{}{"field1": int64(1), "field2": "nested"},
+				},
+			}
+
+			inserter := table.Inserter()
+			if err := inserter.Put(ctx, testData); err != nil {
+				t.Fatalf("failed to insert rows: %v", err)
+			}
+
+			// Now try to read via Storage API with specified format
+			opts, err := testServer.GRPCClientOptions(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			bqReadClient, err := bqStorage.NewBigQueryReadClient(ctx, opts...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = bqReadClient.Close() }()
+
+			readTable := fmt.Sprintf("projects/%s/datasets/%s/tables/%s", projectID, datasetID, tableID)
+
+			createReadSessionRequest := &storagepb.CreateReadSessionRequest{
+				Parent: fmt.Sprintf("projects/%s", projectID),
+				ReadSession: &storagepb.ReadSession{
+					Table:      readTable,
+					DataFormat: format.dataFormat,
+				},
+				MaxStreamCount: 1,
+			}
+
+			session, err := bqReadClient.CreateReadSession(ctx, createReadSessionRequest, rpcOpts)
+			if err != nil {
+				t.Fatalf("CreateReadSession: %v", err)
+			}
+
+			if len(session.GetStreams()) == 0 {
+				t.Fatal("no streams in session")
+			}
+
+			// Try to read the data
+			stream := session.GetStreams()[0]
+			readRowsRequest := &storagepb.ReadRowsRequest{
+				ReadStream: stream.Name,
+			}
+
+			rowStream, err := bqReadClient.ReadRows(ctx, readRowsRequest, rpcOpts)
+			if err != nil {
+				t.Fatalf("ReadRows: %v", err)
+			}
+
+			// Try to read first response
+			resp, err := rowStream.Recv()
+			if err != nil && err != io.EOF {
+				t.Fatalf("Failed to read data in %s format: %v", format.name, err)
+			}
+
+			if resp != nil {
+				// Validate we can decode the data properly based on format
+				if format.dataFormat == storagepb.DataFormat_AVRO {
+					// Validate the AVRO schema matches BigQuery's expected format
+					avroSchemaStr := session.GetAvroSchema().GetSchema()
+					t.Logf("AVRO Schema:\n%s", avroSchemaStr)
+
+					// Parse the schema as JSON to validate structure
+					var avroSchema map[string]interface{}
+					if err := json.Unmarshal([]byte(avroSchemaStr), &avroSchema); err != nil {
+						t.Fatalf("Failed to parse AVRO schema as JSON: %v", err)
+					}
+
+					// Validate root type
+					if avroSchema["type"] != "record" {
+						t.Fatalf("Expected root type to be 'record', got: %v", avroSchema["type"])
+					}
+
+					// Validate fields exist
+					fields, ok := avroSchema["fields"].([]interface{})
+					if !ok {
+						t.Fatalf("Expected 'fields' to be an array")
+					}
+
+					// Expected field count (13 fields in our schema)
+					expectedFieldCount := 13
+					if len(fields) != expectedFieldCount {
+						t.Fatalf("Expected %d fields, got %d", expectedFieldCount, len(fields))
+					}
+
+					avroRows := resp.GetAvroRows()
+					if avroRows != nil {
+						t.Logf("Successfully read %d rows in AVRO format from API-created table", resp.RowCount)
+
+						// Decode and verify the AVRO data
+						codec, err := goavro.NewCodec(avroSchemaStr)
+						if err != nil {
+							t.Fatalf("Failed to create AVRO codec: %v", err)
+						}
+
+						undecoded := avroRows.GetSerializedBinaryRows()
+						if len(undecoded) > 0 {
+							datum, _, err := codec.NativeFromBinary(undecoded)
+							if err != nil {
+								t.Fatalf("Failed to decode AVRO data: %v", err)
+							}
+
+							// Verify the decoded data
+							datumMap, ok := datum.(map[string]interface{})
+							if !ok {
+								t.Fatalf("Expected datum to be a map, got %T", datum)
+							}
+
+							// Check numeric_col value
+							if numericVal, ok := datumMap["numeric_col"]; ok {
+								// Extract the actual value from the union type
+								if unionMap, ok := numericVal.(map[string]interface{}); ok {
+									// Get the value from the union (should be under "bytes.decimal" key)
+									for key, val := range unionMap {
+										t.Logf("numeric_col union key: %s, value type: %T, value: %v", key, val, val)
+									}
+								} else {
+									t.Logf("numeric_col value type: %T, value: %v", numericVal, numericVal)
+								}
+							}
+
+							t.Logf("Decoded AVRO datum: %+v", datumMap)
+						}
+					}
+				} else if format.dataFormat == storagepb.DataFormat_ARROW {
+					ipcschema := resp.GetArrowSchema().GetSerializedSchema()
+					mem := memory.NewGoAllocator()
+					buf := bytes.NewBuffer(ipcschema)
+					r, err := ipc.NewReader(buf, ipc.WithAllocator(mem))
+					if err != nil {
+						t.Fatalf("NewReader: %v", err)
+					}
+					aschema := r.Schema()
+
+					// Verify that NUMERIC and BIGNUMERIC fields use proper decimal types
+					for i := 0; i < aschema.NumFields(); i++ {
+						field := aschema.Field(i)
+						t.Logf("Arrow field %d: name=%s, type=%T (%s)", i, field.Name, field.Type, field.Type)
+
+						switch field.Name {
+						case "numeric_col":
+							decType, ok := field.Type.(*arrow.Decimal128Type)
+							if !ok {
+								t.Fatalf("numeric_col should be Decimal128Type, got %T", field.Type)
+							}
+							if decType.Precision != 38 || decType.Scale != 9 {
+								t.Fatalf("numeric_col should have precision=38, scale=9, got precision=%d, scale=%d",
+									decType.Precision, decType.Scale)
+							}
+							t.Logf("✓ numeric_col correctly uses Decimal128 with precision=%d, scale=%d",
+								decType.Precision, decType.Scale)
+						case "bignumeric_col":
+							decType, ok := field.Type.(*arrow.Decimal256Type)
+							if !ok {
+								t.Fatalf("bignumeric_col should be Decimal256Type, got %T", field.Type)
+							}
+							if decType.Precision != 76 || decType.Scale != 38 {
+								t.Fatalf("bignumeric_col should have precision=76, scale=38, got precision=%d, scale=%d",
+									decType.Precision, decType.Scale)
+							}
+							t.Logf("✓ bignumeric_col correctly uses Decimal256 with precision=%d, scale=%d (BigQuery=76.76 digits)",
+								decType.Precision, decType.Scale)
+						}
+					}
+
+					arrowBatch := resp.GetArrowRecordBatch()
+					if arrowBatch != nil {
+						undecoded := resp.GetArrowRecordBatch().GetSerializedRecordBatch()
+
+						buf := bytes.NewBuffer(ipcschema)
+						buf.Write(undecoded)
+						r, err = ipc.NewReader(buf, ipc.WithAllocator(mem), ipc.WithSchema(aschema))
+						if err != nil {
+							t.Fatalf("NewReader: %v", err)
+						}
+						for r.Next() {
+							rec := r.RecordBatch()
+
+							// Validate that we have rows
+							if rec.NumRows() == 0 {
+								t.Fatal("Expected at least one row in record batch")
+							}
+
+							// Validate and log each column value
+							for colIdx := int64(0); colIdx < rec.NumCols(); colIdx++ {
+								col := rec.Column(int(colIdx))
+								fieldName := aschema.Field(int(colIdx)).Name
+
+								// Ensure column is not nil
+								if col == nil {
+									t.Fatalf("Column %d (%s) is nil", colIdx, fieldName)
+								}
+
+								// Validate column length matches row count
+								if col.Len() != int(rec.NumRows()) {
+									t.Fatalf("Column %d (%s) length %d does not match row count %d",
+										colIdx, fieldName, col.Len(), rec.NumRows())
+								}
+
+								// Log the value for the first row
+								if rec.NumRows() > 0 {
+									valueStr := col.ValueStr(0)
+									t.Logf("Column %d (%s): %s", colIdx, fieldName, valueStr)
+
+									// Ensure the value is not just empty or null for most fields
+									// (except for nullable fields which we can't easily check here)
+									if !col.IsNull(0) && valueStr == "" {
+										t.Logf("Warning: Column %d (%s) has empty ValueStr but is not null", colIdx, fieldName)
+									}
+								}
+							}
+						}
+						t.Logf("Successfully read %d rows in ARROW format from API-created table", resp.RowCount)
+					}
+				}
+			}
+
+			t.Logf("Successfully read data from API-created table in %s format", format.name)
+		})
 	}
-
-	// Insert data - use string values for date/datetime to avoid import issues
-	type TestRow struct {
-		StringCol     string                 `bigquery:"string_col"`
-		IntCol        int64                  `bigquery:"int_col"`
-		FloatCol      float64                `bigquery:"float_col"`
-		BoolCol       bool                   `bigquery:"bool_col"`
-		BytesCol      []byte                 `bigquery:"bytes_col"`
-		DateCol       string                 `bigquery:"date_col"`
-		DatetimeCol   string                 `bigquery:"datetime_col"`
-		TimestampCol  time.Time              `bigquery:"timestamp_col"`
-		TimeCol       civil.Time             `bigquery:"time_col"`
-		NumericCol    string                 `bigquery:"numeric_col"`
-		BignumericCol string                 `bigquery:"bignumeric_col"`
-		ArrayCol      []string               `bigquery:"array_col"`
-		StructCol     map[string]interface{} `bigquery:"struct_col"`
-	}
-
-	testData := []TestRow{
-		{
-			StringCol:     "hello",
-			IntCol:        42,
-			FloatCol:      3.14,
-			BoolCol:       true,
-			BytesCol:      []byte("abc"),
-			DateCol:       "2024-01-01",
-			DatetimeCol:   "2024-01-01T12:00:00",
-			TimestampCol:  time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC),
-			TimeCol:       civil.Time{Hour: 12},
-			NumericCol:    "123.456",
-			BignumericCol: "999999999999999999999.999999999",
-			ArrayCol:      []string{"x", "y"},
-			StructCol:     map[string]interface{}{"field1": int64(1), "field2": "nested"},
-		},
-	}
-
-	inserter := table.Inserter()
-	if err := inserter.Put(ctx, testData); err != nil {
-		t.Fatalf("failed to insert rows: %v", err)
-	}
-
-	// Now try to read via Storage API with AVRO format
-	// This should fail with "unsupported avro type INT64" error
-	opts, err := testServer.GRPCClientOptions(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	bqReadClient, err := bqStorage.NewBigQueryReadClient(ctx, opts...)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = bqReadClient.Close() }()
-
-	readTable := fmt.Sprintf("projects/%s/datasets/%s/tables/%s", projectID, datasetID, tableID)
-
-	createReadSessionRequest := &storagepb.CreateReadSessionRequest{
-		Parent: fmt.Sprintf("projects/%s", projectID),
-		ReadSession: &storagepb.ReadSession{
-			Table:      readTable,
-			DataFormat: storagepb.DataFormat_AVRO,
-		},
-		MaxStreamCount: 1,
-	}
-
-	session, err := bqReadClient.CreateReadSession(ctx, createReadSessionRequest, rpcOpts)
-	if err != nil {
-		t.Fatalf("CreateReadSession: %v", err)
-	}
-
-	if len(session.GetStreams()) == 0 {
-		t.Fatal("no streams in session")
-	}
-
-	// Try to read the data - this should trigger the INT64 error
-	stream := session.GetStreams()[0]
-	readRowsRequest := &storagepb.ReadRowsRequest{
-		ReadStream: stream.Name,
-	}
-
-	rowStream, err := bqReadClient.ReadRows(ctx, readRowsRequest, rpcOpts)
-	if err != nil {
-		t.Fatalf("ReadRows: %v", err)
-	}
-
-	// Try to read first response - should fail with AVRO marshaling error
-	_, err = rowStream.Recv()
-	if err != nil {
-		t.Logf("Expected error occurred: %v", err)
-		// This is the error we expect: "unsupported avro type INT64"
-		if !strings.Contains(err.Error(), "INT64") && !strings.Contains(err.Error(), "unsupported") {
-			t.Fatalf("Expected INT64-related error, got: %v", err)
-		}
-		return
-	}
-
-	// If we get here without error, the bug might be fixed
-	t.Log("Successfully read data from API-created table with INT64 types")
 }
 
 func TestStorageReadAVROWithINT64Type(t *testing.T) {
