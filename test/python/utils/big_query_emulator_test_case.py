@@ -11,7 +11,6 @@ from unittest.mock import patch
 import grpc
 import numpy
 import pandas as pd
-import pytest
 import requests
 from google.api_core import retry
 from google.api_core.client_options import ClientOptions
@@ -25,7 +24,7 @@ from google.cloud.bigquery_storage_v1.services.big_query_read.transports import 
 )
 from pandas_gbq import read_gbq as og_read_gbq
 
-from utils.big_query_emulator_control import BigQueryEmulatorControl, get_bq_emulator_port, BQ_EMULATOR_PROJECT_ID
+from utils.big_query_emulator_container import BigQueryEmulatorContainer, BQ_EMULATOR_PROJECT_ID
 
 
 @attr.s(frozen=True, kw_only=True, order=True)
@@ -64,14 +63,17 @@ def _fail_500(original_error: GoogleAPICallError) -> None:
 
 _fail_500_retry = retry.Retry(predicate=_fail_500)
 
-@pytest.mark.uses_bq_emulator
 class BigQueryEmulatorTestCase(unittest.TestCase):
     """An implementation of TestCase that can be used for tests that talk to the
-    BigQuery emulator."""
+    BigQuery emulator.
+
+    This class now uses testcontainers internally for container management while
+    maintaining backward compatibility with existing tests.
+    """
 
     project_id = BQ_EMULATOR_PROJECT_ID
 
-    control: BigQueryEmulatorControl
+    emulator: BigQueryEmulatorContainer
 
     # Deletes all tables / views in the emulator after each test
     # Subclasses can choose to override this as it may not always be necessary
@@ -88,9 +90,10 @@ class BigQueryEmulatorTestCase(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.control = BigQueryEmulatorControl.build()
-        cls.control.pull_image()
-        cls.control.start_emulator()
+        cls.emulator = BigQueryEmulatorContainer(
+            input_schema_json_path=cls.input_json_schema_path
+        )
+        cls.emulator.start()
 
     def setUp(self) -> None:
         self.bq_error_handling_patcher = patch(
@@ -100,7 +103,7 @@ class BigQueryEmulatorTestCase(unittest.TestCase):
         self.client = bigquery.Client(
             project=BQ_EMULATOR_PROJECT_ID,
             client_options=ClientOptions(
-                api_endpoint=f"http://0.0.0.0:{get_bq_emulator_port()}"
+                api_endpoint=self.emulator.get_connection_url()
             ),
             credentials=credentials.AnonymousCredentials(),
 
@@ -118,12 +121,12 @@ class BigQueryEmulatorTestCase(unittest.TestCase):
 
         # Patch BigQuery Client to always create a new emulator storage client
         def _create_bqstorage_client() -> Any:
-            channel = grpc.insecure_channel(f"localhost:{self.control.grpc_port}")
+            channel = grpc.insecure_channel(self.emulator.get_grpc_endpoint())
             transport = BigQueryReadGrpcTransport(channel=channel)
             return BigQueryReadClient(
                 transport=transport,
                 client_options={
-                    "api_endpoint": f"localhost:{self.control.grpc_port}",
+                    "api_endpoint": self.emulator.get_grpc_endpoint(),
                 },
             )
 
@@ -144,12 +147,11 @@ class BigQueryEmulatorTestCase(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls) -> None:
-        logs = cls.control.get_logs()
-
         if cls.show_emulator_logs_on_failure:
+            logs = cls.emulator.get_logs()
             print(logs)
 
-        cls.control.stop_emulator()
+        cls.emulator.stop()
 
         if cls.input_json_schema_path and cls.delete_json_input_schema_on_teardown:
             os.remove(cls.input_json_schema_path)
