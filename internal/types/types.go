@@ -2,8 +2,6 @@ package types
 
 import (
 	"fmt"
-	"time"
-
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/goccy/bigquery-emulator/types"
 	"github.com/goccy/go-zetasqlite"
@@ -242,9 +240,8 @@ func Format(schema *bigqueryv2.TableSchema, rows []*TableRow, useInt64Timestamp 
 		for colIdx, cell := range row.F {
 			if schema.Fields[colIdx].Type == "TIMESTAMP" && cell.V != nil {
 				t, _ := zetasqlite.TimeFromTimestampValue(cell.V.(string))
-				microsec := t.UnixNano() / int64(time.Microsecond)
 				cells = append(cells, &TableCell{
-					V: fmt.Sprint(microsec),
+					V: fmt.Sprint(t.UnixMicro()),
 				})
 			} else {
 				cells = append(cells, cell)

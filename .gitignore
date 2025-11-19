@@ -17,6 +17,7 @@ dist
 
 # Python files
 __pycache__
+.venv
 
 # JetBrains IDE
 .idea
