@@ -118,4 +118,4 @@ require (
 	modernc.org/sqlite v1.37.0
 )
 
-replace github.com/goccy/go-zetasqlite => github.com/Recidiviz/go-zetasqlite v0.18.0-recidiviz.16.2
+replace github.com/goccy/go-zetasqlite => github.com/Recidiviz/go-zetasqlite v0.18.0-recidiviz.17
