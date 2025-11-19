@@ -1024,3 +1024,102 @@ FROM UNNEST([
                         )
             else:
                 assert False, "Unsupported format"
+
+
+    def test_timestamp_min_max(self) -> None:
+        """Tests resolution of https://github.com/goccy/go-zetasqlite/issues/132
+        and https://github.com/goccy/bigquery-emulator/issues/262"""
+        self.run_query_test(
+            """SELECT TIMESTAMP '0001-01-01 00:00:00.000000+00', TIMESTAMP '9999-12-31 23:59:59.999999+00'""",
+            expected_result=[
+                {
+                    "$col1": datetime.datetime(
+                        1, 1, 1, 0, 0, tzinfo=datetime.timezone.utc
+                    ),
+                    "$col2": datetime.datetime(
+                        9999, 12, 31, 23, 59, 59, 999999, tzinfo=datetime.timezone.utc
+                    ),
+                }
+            ],
+        )
+
+    def test_int64_min_max(self) -> None:
+        """Tests extreme INT64 values (64-bit signed integer range)"""
+        self.run_query_test(
+            """SELECT -9223372036854775808 AS min_int64, 9223372036854775807 AS max_int64""",
+            expected_result=[
+                {
+                    "min_int64": -9223372036854775808,
+                    "max_int64": 9223372036854775807,
+                }
+            ],
+        )
+
+    def test_numeric_min_max(self) -> None:
+        """Tests extreme NUMERIC values (38 digits, 9 after decimal point)"""
+        self.run_query_test(
+            """SELECT
+                NUMERIC '-99999999999999999999999999999.999999999' AS min_numeric,
+                NUMERIC '99999999999999999999999999999.999999999' AS max_numeric
+            """,
+            expected_result=[
+                {
+                    "min_numeric": Decimal('-99999999999999999999999999999.999999999'),
+                    "max_numeric": Decimal('99999999999999999999999999999.999999999'),
+                }
+            ],
+        )
+
+    def test_bignumeric_min_max(self) -> None:
+        """Tests extreme BIGNUMERIC values"""
+        self.run_query_test(
+            """SELECT
+                BIGNUMERIC '-578960446186580977117854925043439539266.34992332820282019728792003956564819968' AS min_bignumeric,
+                BIGNUMERIC '578960446186580977117854925043439539266.34992332820282019728792003956564819967' AS max_bignumeric
+            """,
+            expected_result=[
+                {
+                    "min_bignumeric": Decimal('-578960446186580977117854925043439539266.34992332820282019728792003956564819968'),
+                    "max_bignumeric": Decimal('578960446186580977117854925043439539266.34992332820282019728792003956564819967'),
+                }
+            ],
+        )
+
+    def test_date_min_max(self) -> None:
+        """Tests extreme DATE values"""
+        self.run_query_test(
+            """SELECT DATE '0001-01-01' AS min_date, DATE '9999-12-31' AS max_date""",
+            expected_result=[
+                {
+                    "min_date": datetime.date(1, 1, 1),
+                    "max_date": datetime.date(9999, 12, 31),
+                }
+            ],
+        )
+
+    def test_datetime_min_max(self) -> None:
+        """Tests extreme DATETIME values"""
+        self.run_query_test(
+            """SELECT
+                DATETIME '0001-01-01 00:00:00' AS min_datetime,
+                DATETIME '9999-12-31 23:59:59.999999' AS max_datetime
+            """,
+            expected_result=[
+                {
+                    "min_datetime": datetime.datetime(1, 1, 1, 0, 0, 0),
+                    "max_datetime": datetime.datetime(9999, 12, 31, 23, 59, 59, 999999),
+                }
+            ],
+        )
+
+    def test_time_min_max(self) -> None:
+        """Tests extreme TIME values"""
+        self.run_query_test(
+            """SELECT TIME '00:00:00' AS min_time, TIME '23:59:59.999999' AS max_time""",
+            expected_result=[
+                {
+                    "min_time": datetime.time(0, 0, 0),
+                    "max_time": datetime.time(23, 59, 59, 999999),
+                }
+            ],
+        )
