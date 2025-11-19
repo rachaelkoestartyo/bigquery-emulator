@@ -100,3 +100,43 @@ jobs:
       env:
         CC: clang
         CXX: clang++
+
+  python-integration-test:
+    needs: build
+    name: Python Integration Test
+    runs-on: ubuntu-latest
+    steps:
+    - name: checkout
+      uses: actions/checkout@v4
+    - name: setup docker buildx
+      uses: docker/setup-buildx-action@v3
+    - name: build docker image
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        load: true
+        tags: bigquery-emulator:test
+        platforms: linux/amd64
+        push: false
+    - name: setup python
+      uses: actions/setup-python@v5
+      with:
+        python-version-file: test/python/.python-version
+    - name: install uv
+      uses: astral-sh/setup-uv@v5
+    - name: cache uv dependencies
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/uv
+        key: ${{ runner.os }}-uv-${{ hashFiles('test/python/uv.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-uv-
+    - name: sync dependencies
+      run: uv sync
+      working-directory: test/python
+    - name: run integration tests
+      run: uv run pytest -v
+      working-directory: test/python
+      env:
+        BIGQUERY_EMULATOR_REPOSITORY: bigquery-emulator
+        BIGQUERY_EMULATOR_VERSION: test
