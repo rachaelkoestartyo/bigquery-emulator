@@ -1,19 +1,19 @@
 package types
 
 import (
+	"cloud.google.com/go/bigquery"
 	"encoding/base64"
+	"encoding/binary"
 	"fmt"
-	"math/big"
-	"strconv"
-	"strings"
-	"time"
-
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/decimal128"
 	"github.com/apache/arrow-go/v18/arrow/decimal256"
 	"github.com/goccy/go-zetasqlite"
 	bigqueryv2 "google.golang.org/api/bigquery/v2"
+	"math/big"
+	"strconv"
+	"strings"
 )
 
 func TableToARROW(t *bigqueryv2.Table) (*arrow.Schema, error) {
@@ -59,7 +59,7 @@ func tableFieldToARROW(f *bigqueryv2.TableFieldSchema) (*arrow.Field, error) {
 	case FieldBytes:
 		return &arrow.Field{Name: f.Name, Type: arrow.BinaryTypes.Binary}, nil
 	case FieldDate:
-		return &arrow.Field{Name: f.Name, Type: arrow.PrimitiveTypes.Date32}, nil
+		return &arrow.Field{Name: f.Name, Type: arrow.PrimitiveTypes.Date64}, nil
 	case FieldDatetime:
 		return &arrow.Field{
 			Name: f.Name,
@@ -96,11 +96,21 @@ func tableFieldToARROW(f *bigqueryv2.TableFieldSchema) (*arrow.Field, error) {
 		return &arrow.Field{Name: f.Name, Type: arrow.StructOf(fields...)}, nil
 	case FieldNumeric:
 		// NUMERIC is a DECIMAL with precision 38, scale 9
-		return &arrow.Field{Name: f.Name, Type: &arrow.Decimal128Type{Precision: 38, Scale: 9}}, nil
+		return &arrow.Field{Name: f.Name, Type: &arrow.Decimal128Type{
+			Precision: bigquery.NumericPrecisionDigits,
+			Scale:     bigquery.NumericScaleDigits,
+		}}, nil
 	case FieldBignumeric:
-		// BIGNUMERIC is a DECIMAL with precision 76, scale 38
-		// BigQuery supports 76.76 digits (76 full digits, 77th is partial)
-		return &arrow.Field{Name: f.Name, Type: &arrow.Decimal256Type{Precision: 76, Scale: 38}}, nil
+		// In BigQuery, BIGNUMERIC is a DECIMAL with precision 76 (partial 77), scale 38
+		// Values requiring 77 digits when scaled by 10^38 work fine, including the maximum value (±2^255 / 10^38).
+		// These values can technically be encoded into the Arrow format, but most libraries (including arrow-go)
+		// raise validation errors when trying to build them.
+		// The values returned by the BigQuery Storage Read API raise errors when you try to validate them client side
+		// but if you only access their values, it is fine.
+		return &arrow.Field{Name: f.Name, Type: &arrow.Decimal256Type{
+			Precision: bigquery.BigNumericPrecisionDigits, // 76
+			Scale:     bigquery.BigNumericScaleDigits,     // 38
+		}}, nil
 	case FieldGeography:
 		return &arrow.Field{Name: f.Name, Type: arrow.BinaryTypes.String}, nil
 	case FieldInterval:
@@ -148,12 +158,12 @@ func AppendValueToARROWBuilder(ptrv *string, builder array.Builder) error {
 		}
 		b.Append(decoded)
 		return nil
-	case *array.Date32Builder:
+	case *array.Date64Builder:
 		t, err := parseDate(v)
 		if err != nil {
 			return err
 		}
-		b.Append(arrow.Date32(int32(t.Sub(time.Unix(0, 0)) / (24 * time.Hour))))
+		b.Append(arrow.Date64FromTime(t))
 		return nil
 	case *array.Time64Builder:
 		t, err := parseTime(v)
@@ -198,32 +208,83 @@ func AppendValueToARROWBuilder(ptrv *string, builder array.Builder) error {
 		// Convert to integer (this truncates any remaining fractional part)
 		scaledInt := new(big.Int).Div(scaled.Num(), scaled.Denom())
 
-		// Convert to decimal128.Num
-		num := decimal128.FromBigInt(scaledInt)
-		b.Append(num)
+		// Convert to decimal128.Num using Arrow's FromBigInt (handles two's complement correctly)
+		b.Append(decimal128.FromBigInt(scaledInt))
 		return nil
 	case *array.Decimal256Builder:
-		// BIGNUMERIC type: precision 77, scale 38
-		// Parse the string value to a big.Rat, then convert to scaled integer
+		// BIGNUMERIC type: precision 76, scale 38
+		// NOTE: BigQuery declares decimal256(76, 38) in the schema but doesn't enforce
+		// precision during encoding. Values requiring 77 digits when scaled work fine in BigQuery.
+		// We bypass Arrow's FromBigInt validation (bitlen > 255 check) and manually construct
+		// the Decimal256 using the same logic but without the strict check.
+
+		// Parse as rational number
 		rat := new(big.Rat)
 		if _, ok := rat.SetString(v); !ok {
-			return fmt.Errorf("failed to parse decimal value: %s", v)
+			return fmt.Errorf("failed to parse BIGNUMERIC value: %s", v)
 		}
 
-		// Scale the value by 10^scale to get the integer representation
-		scale := int32(38)
-		scaleFactor := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(scale)), nil)
-
-		// Multiply the rational by the scale factor
+		// Scale by 10^38 to get integer representation
+		scale := int64(bigquery.BigNumericScaleDigits) // 38
+		scaleFactor := new(big.Int).Exp(big.NewInt(10), big.NewInt(scale), nil)
 		scaled := new(big.Rat).Mul(rat, new(big.Rat).SetInt(scaleFactor))
 
-		// Convert to integer (this truncates any remaining fractional part)
+		// Convert to integer (truncating any remaining fractional part)
 		scaledInt := new(big.Int).Div(scaled.Num(), scaled.Denom())
 
-		// Convert to decimal256.Num
-		num := decimal256.FromBigInt(scaledInt)
+		// Replicate decimal256.FromBigInt logic without the bitlen > 255 check
+		// This matches how Arrow handles two's complement representation
+		var num decimal256.Num
+		if scaledInt.Sign() == 0 {
+			// Zero value, return default
+			b.Append(num)
+			return nil
+		}
+
+		num = decimal256FromScaledInt(scaledInt)
+
 		b.Append(num)
 		return nil
 	}
 	return fmt.Errorf("unexpected builder type %T", builder)
+}
+
+func decimal256FromScaledInt(scaledInt *big.Int) decimal256.Num {
+	b := scaledInt.FillBytes(make([]byte, 32))
+
+	var limbs [4]uint64
+
+	// Arrow Decimal256 uses little-endian uint64 limbs.
+	// BigQuery and BigInt.FillBytes produce big-endian bytes.
+	//
+	// So the 256-bit structure:
+	//   b[0] ... b[31]   (big endian)
+	// maps to Arrow limbs:
+	//   limbs[0] = low  64 bits
+	//   limbs[3] = high 64 bits
+
+	for i := 0; i < 4; i++ {
+		// Big-endian slice for limb i:
+		start := 32 - (i+1)*8
+		end := 32 - i*8
+
+		// Convert this BE 8-byte block into LE uint64
+		// Arrow stores each limb as native endian (LE)
+		limbs[i] = binary.LittleEndian.Uint64(reverse8(b[start:end]))
+	}
+
+	dec := decimal256.New(limbs[3], limbs[2], limbs[1], limbs[0])
+	// If negative, negate to get two's complement representation
+	if scaledInt.Sign() < 0 {
+		dec = dec.Negate()
+	}
+	return dec
+}
+
+func reverse8(b []byte) []byte {
+	out := make([]byte, 8)
+	for i := 0; i < 8; i++ {
+		out[i] = b[7-i]
+	}
+	return out
 }

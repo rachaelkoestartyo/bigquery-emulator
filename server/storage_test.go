@@ -1098,7 +1098,7 @@ func generateExampleMessages(numMessages int) ([][]byte, error) {
 			// NUMERIC and BIGNUMERIC can be passed as string, or more efficiently
 			// using a packed byte representation.
 			NumericCol:    proto.String("99999999999999999999999999999.999999999"),
-			BignumericCol: proto.String("578960446186580977117854925043439539266.34992332820282019728792003956564819967"),
+			BignumericCol: proto.String("-578960446186580977117854925043439539266.34992332820282019728792003956564819968"),
 
 			// TIME also uses literal format.
 			TimeCol: proto.String("12:13:14.000000"),
@@ -1394,18 +1394,17 @@ func TestStorageReadWithAPICreatedTable(t *testing.T) {
 
 			testData := []TestRow{
 				{
-					StringCol:    "hello",
-					IntCol:       42,
-					FloatCol:     3.14,
-					BoolCol:      true,
-					BytesCol:     []byte("abc"),
-					DateCol:      "2024-01-01",
-					DatetimeCol:  "2024-01-01T12:00:00",
-					TimestampCol: time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC),
-					TimeCol:      civil.Time{Hour: 12},
-					NumericCol:   "123.456",
-					// BIGNUMERIC max: 38 integer digits, 38 fractional digits
-					BignumericCol: "12345678901234567890123456789012345678.12345678901234567890123456789012345678",
+					StringCol:     "hello",
+					IntCol:        42,
+					FloatCol:      3.14,
+					BoolCol:       true,
+					BytesCol:      []byte("abc"),
+					DateCol:       "2024-01-01",
+					DatetimeCol:   "2024-01-01T12:00:00",
+					TimestampCol:  time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC),
+					TimeCol:       civil.Time{Hour: 12},
+					NumericCol:    "123.456",
+					BignumericCol: "578960446186580977117854925043439539266.34992332820282019728792003956564819967",
 					ArrayCol:      []string{"x", "y"},
 					StructCol:     map[string]interface{}{"field1": int64(1), "field2": "nested"},
 				},
