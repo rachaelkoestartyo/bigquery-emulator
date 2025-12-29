@@ -595,9 +595,14 @@ func (h *uploadContentHandler) detectSchema(records [][]string, skipLeadingRows 
 	header := records[0]
 	dataRows := records[1:]
 
-	// Skip leading rows if configured (after header)
-	if skipLeadingRows > 0 && int64(len(dataRows)) > skipLeadingRows {
-		dataRows = dataRows[skipLeadingRows:]
+	// SkipLeadingRows includes the header row, so when using autodetect
+	// (where row 0 is always the header), we should only skip additional
+	// rows if SkipLeadingRows > 1
+	if skipLeadingRows > 1 {
+		skip := int(skipLeadingRows) - 1 // -1 because header is already handled
+		if skip < len(dataRows) {
+			dataRows = dataRows[skip:]
+		}
 	}
 
 	if len(dataRows) == 0 {
@@ -774,9 +779,14 @@ func (h *uploadContentHandler) Handle(ctx context.Context, r *uploadContentReque
 		}
 
 		// Determine data rows, respecting SkipLeadingRows
+		// SkipLeadingRows includes the header row, so we only skip additional
+		// rows if SkipLeadingRows > 1 (header already extracted as row 0)
 		dataRows := csvRecords[1:]
-		if load.SkipLeadingRows > 0 && int64(len(dataRows)) > load.SkipLeadingRows {
-			dataRows = dataRows[load.SkipLeadingRows:]
+		if load.SkipLeadingRows > 1 {
+			skip := int(load.SkipLeadingRows) - 1 // -1 because header is already handled
+			if skip < len(dataRows) {
+				dataRows = dataRows[skip:]
+			}
 		}
 
 		for _, record := range dataRows {

@@ -651,6 +651,57 @@ func TestDetectSchema(t *testing.T) {
 			expectedFields:  nil,
 			wantErr:         true,
 		},
+		{
+			// skipLeadingRows=1 means only skip the header row, which is already
+			// extracted, so all data rows should be used for type inference
+			name: "skip_leading_rows_1",
+			records: [][]string{
+				{"name", "value"},
+				{"Alice", "100"},
+				{"Bob", "200"},
+				{"Charlie", "300"},
+			},
+			skipLeadingRows: 1,
+			expectedFields: map[string]string{
+				"name":  "STRING",
+				"value": "INTEGER",
+			},
+			wantErr: false,
+		},
+		{
+			// skipLeadingRows=2 means skip header + 1 data row, so type inference
+			// should only see rows after the first data row
+			name: "skip_leading_rows_2",
+			records: [][]string{
+				{"name", "value"},
+				{"SKIP_ME", "not_a_number"}, // This row should be skipped
+				{"Bob", "200"},
+				{"Charlie", "300"},
+			},
+			skipLeadingRows: 2,
+			expectedFields: map[string]string{
+				"name":  "STRING",
+				"value": "INTEGER", // Would be STRING if first data row wasn't skipped
+			},
+			wantErr: false,
+		},
+		{
+			// skipLeadingRows=3 means skip header + 2 data rows
+			name: "skip_leading_rows_3",
+			records: [][]string{
+				{"id", "score"},
+				{"skip1", "not_number"},
+				{"skip2", "also_not_number"},
+				{"1", "95.5"},
+				{"2", "88.0"},
+			},
+			skipLeadingRows: 3,
+			expectedFields: map[string]string{
+				"id":    "INTEGER",
+				"score": "FLOAT",
+			},
+			wantErr: false,
+		},
 	}
 
 	for _, tc := range testCases {
