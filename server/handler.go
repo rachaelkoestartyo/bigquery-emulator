@@ -408,6 +408,277 @@ func (h *uploadContentHandler) normalizeColumnNameForJSONData(columnMap map[stri
 	}
 }
 
+// CSV Schema Detection and Type Inference
+
+// dateFormat represents a date format pattern with its Go layout
+type dateFormat struct {
+	pattern string
+	layout  string
+}
+
+var dateFormats = []dateFormat{
+	{"ISO", "2006-01-02"},     // YYYY-MM-DD
+	{"UK", "02/01/2006"},      // DD/MM/YYYY
+	{"US", "01/02/2006"},      // MM/DD/YYYY
+	{"UK_DASH", "02-01-2006"}, // DD-MM-YYYY
+	{"US_DASH", "01-02-2006"}, // MM-DD-YYYY
+}
+
+// isNullValue returns true if the value represents NULL
+func isNullValue(v string) bool {
+	lower := strings.ToLower(strings.TrimSpace(v))
+	return lower == "" || lower == "null"
+}
+
+// isBool returns true if the value can be parsed as a boolean
+func isBool(v string) bool {
+	lower := strings.ToLower(strings.TrimSpace(v))
+	switch lower {
+	case "true", "false", "yes", "no", "y", "n", "1", "0":
+		return true
+	}
+	return false
+}
+
+// isInteger returns true if the value can be parsed as an integer
+func isInteger(v string) bool {
+	_, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+	return err == nil
+}
+
+// isFloat returns true if the value can be parsed as a float
+func isFloat(v string) bool {
+	_, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+	return err == nil
+}
+
+// allMatch returns true if all values satisfy the predicate
+func allMatch(values []string, predicate func(string) bool) bool {
+	for _, v := range values {
+		if !predicate(v) {
+			return false
+		}
+	}
+	return true
+}
+
+// splitDateParts splits a date string by common separators
+func splitDateParts(v string) []string {
+	for _, sep := range []string{"-", "/", "."} {
+		if parts := strings.Split(v, sep); len(parts) >= 2 {
+			return parts
+		}
+	}
+	return nil
+}
+
+// detectDateFormat examines all values to determine the most likely date format
+// Returns the Go layout string, or empty string if not a date column
+func detectDateFormat(values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+
+	// Track which formats are still valid
+	validFormats := make(map[string]bool)
+	for _, df := range dateFormats {
+		validFormats[df.pattern] = true
+	}
+
+	for _, v := range values {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
+
+		// Eliminate formats that can't parse this value
+		for _, df := range dateFormats {
+			if validFormats[df.pattern] {
+				if _, err := time.Parse(df.layout, v); err != nil {
+					validFormats[df.pattern] = false
+				}
+			}
+		}
+
+		// Use day > 12 to disambiguate UK vs US format
+		parts := splitDateParts(v)
+		if len(parts) >= 2 {
+			first, _ := strconv.Atoi(parts[0])
+			second, _ := strconv.Atoi(parts[1])
+
+			if first > 12 {
+				// First part > 12, can't be month, so eliminate US format
+				validFormats["US"] = false
+				validFormats["US_DASH"] = false
+			}
+			if second > 12 {
+				// Second part > 12, can't be month, so eliminate UK format
+				validFormats["UK"] = false
+				validFormats["UK_DASH"] = false
+			}
+		}
+	}
+
+	// Return the first still-valid format (preference order: ISO, UK, US)
+	for _, df := range dateFormats {
+		if validFormats[df.pattern] {
+			return df.layout
+		}
+	}
+
+	return ""
+}
+
+// selectSampleRows selects a representative sample of rows for type inference
+func selectSampleRows(rows [][]string, maxSamples int) [][]string {
+	if len(rows) <= maxSamples {
+		return rows
+	}
+
+	samples := make([][]string, 0, maxSamples)
+	samples = append(samples, rows[0]) // First row
+
+	// Evenly space the remaining samples
+	remaining := maxSamples - 2
+	step := float64(len(rows)-2) / float64(remaining+1)
+	for i := 1; i <= remaining; i++ {
+		idx := int(float64(i) * step)
+		if idx > 0 && idx < len(rows)-1 {
+			samples = append(samples, rows[idx])
+		}
+	}
+
+	samples = append(samples, rows[len(rows)-1]) // Last row
+	return samples
+}
+
+// inferFieldType infers the BigQuery field type from sample values
+func inferFieldType(rows [][]string, colIndex int) string {
+	// Collect all non-empty, non-null values
+	values := make([]string, 0)
+	for _, row := range rows {
+		if colIndex < len(row) {
+			val := strings.TrimSpace(row[colIndex])
+			if !isNullValue(val) {
+				values = append(values, val)
+			}
+		}
+	}
+
+	if len(values) == 0 {
+		return "STRING" // Default to STRING for all-null columns
+	}
+
+	// Try each type in order of specificity
+	if allMatch(values, isBool) {
+		return "BOOL"
+	}
+	if allMatch(values, isInteger) {
+		return "INTEGER"
+	}
+	if allMatch(values, isFloat) {
+		return "FLOAT"
+	}
+	if detectDateFormat(values) != "" {
+		return "DATE"
+	}
+
+	return "STRING"
+}
+
+// detectSchema samples rows from a CSV and infers the schema
+func (h *uploadContentHandler) detectSchema(records [][]string, skipLeadingRows int64) (*bigqueryv2.TableSchema, error) {
+	if len(records) == 0 {
+		return nil, fmt.Errorf("empty csv file")
+	}
+
+	header := records[0]
+	dataRows := records[1:]
+
+	// Skip leading rows if configured (after header)
+	if skipLeadingRows > 0 && int64(len(dataRows)) > skipLeadingRows {
+		dataRows = dataRows[skipLeadingRows:]
+	}
+
+	if len(dataRows) == 0 {
+		// Only header, create schema with STRING types
+		fields := make([]*bigqueryv2.TableFieldSchema, len(header))
+		for i, colName := range header {
+			fields[i] = &bigqueryv2.TableFieldSchema{
+				Name: colName,
+				Type: "STRING",
+				Mode: "NULLABLE",
+			}
+		}
+		return &bigqueryv2.TableSchema{Fields: fields}, nil
+	}
+
+	// Sample rows for type inference
+	sampleRows := selectSampleRows(dataRows, 10)
+
+	// Infer type for each column
+	fields := make([]*bigqueryv2.TableFieldSchema, len(header))
+	for i, colName := range header {
+		inferredType := inferFieldType(sampleRows, i)
+		fields[i] = &bigqueryv2.TableFieldSchema{
+			Name: colName,
+			Type: inferredType,
+			Mode: "NULLABLE",
+		}
+	}
+
+	return &bigqueryv2.TableSchema{Fields: fields}, nil
+}
+
+// parseBoolValue parses various boolean representations
+func parseBoolValue(v string) (bool, error) {
+	lower := strings.ToLower(strings.TrimSpace(v))
+	switch lower {
+	case "true", "yes", "y", "1":
+		return true, nil
+	case "false", "no", "n", "0":
+		return false, nil
+	default:
+		return false, fmt.Errorf("invalid boolean value: %s", v)
+	}
+}
+
+// parseAndConvertDate tries multiple date formats and returns ISO format
+func parseAndConvertDate(v string) (string, error) {
+	v = strings.TrimSpace(v)
+	for _, df := range dateFormats {
+		if t, err := time.Parse(df.layout, v); err == nil {
+			return t.Format("2006-01-02"), nil // Return ISO format
+		}
+	}
+	return "", fmt.Errorf("could not parse date: %s", v)
+}
+
+// convertCSVValue converts a string value to the appropriate Go type based on the column type
+func convertCSVValue(value string, colType types.Type) (interface{}, error) {
+	value = strings.TrimSpace(value)
+
+	// Handle NULL values
+	if isNullValue(value) {
+		return nil, nil
+	}
+
+	switch colType {
+	case types.INT64:
+		return strconv.ParseInt(value, 10, 64)
+	case types.FLOAT64:
+		return strconv.ParseFloat(value, 64)
+	case types.BOOL:
+		return parseBoolValue(value)
+	case types.DATE:
+		return parseAndConvertDate(value)
+	case types.STRING:
+		return value, nil
+	default:
+		return value, nil
+	}
+}
+
 func (h *uploadContentHandler) Handle(ctx context.Context, r *uploadContentRequest) error {
 	load := r.job.Content().Configuration.Load
 	tableRef := load.DestinationTable
@@ -419,6 +690,28 @@ func (h *uploadContentHandler) Handle(ctx context.Context, r *uploadContentReque
 	if err != nil {
 		return err
 	}
+
+	// For CSV with autodetect, we need to read the file first to detect schema
+	var csvRecords [][]string
+	if load.SourceFormat == "CSV" {
+		csvRecords, err = csv.NewReader(r.reader).ReadAll()
+		if err != nil {
+			return fmt.Errorf("failed to read csv: %w", err)
+		}
+		if len(csvRecords) == 0 {
+			return fmt.Errorf("failed to find csv header")
+		}
+
+		// If autodetect is enabled and no schema provided, detect schema from CSV
+		if load.Autodetect && (load.Schema == nil || len(load.Schema.Fields) == 0) {
+			detectedSchema, err := h.detectSchema(csvRecords, load.SkipLeadingRows)
+			if err != nil {
+				return fmt.Errorf("failed to detect schema: %w", err)
+			}
+			load.Schema = detectedSchema
+		}
+	}
+
 	if table == nil {
 		if load.CreateDisposition == "CREATE_NEVER" {
 			return fmt.Errorf("`%s` is not found", tableRef.TableId)
@@ -454,17 +747,11 @@ func (h *uploadContentHandler) Handle(ctx context.Context, r *uploadContentReque
 	data := types.Data{}
 	switch sourceFormat {
 	case "CSV":
-		records, err := csv.NewReader(r.reader).ReadAll()
-		if err != nil {
-			return fmt.Errorf("failed to read csv: %w", err)
+		// csvRecords already populated above
+		if len(csvRecords) == 1 {
+			return nil // Only header, no data
 		}
-		if len(records) == 0 {
-			return fmt.Errorf("failed to find csv header")
-		}
-		if len(records) == 1 {
-			return nil
-		}
-		header := records[0]
+		header := csvRecords[0]
 		var ignoreHeader bool
 		for _, col := range header {
 			if _, exists := columnToType[col]; !exists {
@@ -485,18 +772,26 @@ func (h *uploadContentHandler) Handle(ctx context.Context, r *uploadContentReque
 				})
 			}
 		}
-		for _, record := range records[1:] {
+
+		// Determine data rows, respecting SkipLeadingRows
+		dataRows := csvRecords[1:]
+		if load.SkipLeadingRows > 0 && int64(len(dataRows)) > load.SkipLeadingRows {
+			dataRows = dataRows[load.SkipLeadingRows:]
+		}
+
+		for _, record := range dataRows {
 			rowData := map[string]interface{}{}
 			if len(record) != len(columns) {
 				return fmt.Errorf("invalid column number: found broken row data: %v", record)
 			}
 			for i := 0; i < len(record); i++ {
 				colData := record[i]
-				if colData == "" {
-					rowData[columns[i].Name] = nil
-				} else {
-					rowData[columns[i].Name] = colData
+				// Convert value based on column type
+				converted, err := convertCSVValue(colData, columns[i].Type)
+				if err != nil {
+					return fmt.Errorf("failed to convert value %q for column %s: %w", colData, columns[i].Name, err)
 				}
+				rowData[columns[i].Name] = converted
 			}
 			data = append(data, rowData)
 		}
@@ -1114,9 +1409,11 @@ const (
 func (h *jobsInsertHandler) importFromGCS(ctx context.Context, r *jobsInsertRequest) (*bigqueryv2.Job, error) {
 	var opts []option.ClientOption
 	if host := os.Getenv(gcsEmulatorHostEnvName); host != "" {
+		// When STORAGE_EMULATOR_HOST is set, the storage client automatically
+		// detects emulator mode. We only need to add JSON reads and disable auth.
+		// Using option.WithEndpoint() can cause double paths with WithJSONReads().
 		opts = append(
 			opts,
-			option.WithEndpoint(fmt.Sprintf("%s/storage/v1/", host)),
 			storage.WithJSONReads(),
 			option.WithoutAuthentication(),
 		)
@@ -1247,9 +1544,10 @@ func (h *jobsInsertHandler) importFromGCSObject(ctx context.Context, r *jobsInse
 func (h *jobsInsertHandler) exportToGCS(ctx context.Context, r *jobsInsertRequest) (*bigqueryv2.Job, error) {
 	var opts []option.ClientOption
 	if host := os.Getenv(gcsEmulatorHostEnvName); host != "" {
+		// When STORAGE_EMULATOR_HOST is set, the storage client automatically
+		// detects emulator mode. We only need to disable auth.
 		opts = append(
 			opts,
-			option.WithEndpoint(fmt.Sprintf("%s/storage/v1/", host)),
 			option.WithoutAuthentication(),
 		)
 	}
