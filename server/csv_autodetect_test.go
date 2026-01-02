@@ -43,6 +43,10 @@ func TestIsBool(t *testing.T) {
 		{"TRUE", true},
 		{"FALSE", true},
 		{"True", true},
+		{"t", true},
+		{"f", true},
+		{"T", true},
+		{"F", true},
 		{"yes", true},
 		{"no", true},
 		{"YES", true},
@@ -51,8 +55,9 @@ func TestIsBool(t *testing.T) {
 		{"n", true},
 		{"Y", true},
 		{"N", true},
-		{"1", true},
-		{"0", true},
+		// 1/0 are NOT auto-detected as boolean (BigQuery behavior)
+		{"1", false},
+		{"0", false},
 		{"", false},
 		{"maybe", false},
 		{"2", false},
@@ -125,64 +130,137 @@ func TestIsFloat(t *testing.T) {
 	}
 }
 
-func TestDetectDateFormat(t *testing.T) {
+func TestIsDate(t *testing.T) {
 	testCases := []struct {
-		name           string
-		values         []string
-		expectedLayout string
+		input    string
+		expected bool
 	}{
-		{
-			name:           "iso_format",
-			values:         []string{"2024-01-15", "2024-12-31"},
-			expectedLayout: "2006-01-02",
-		},
-		{
-			name:           "uk_format_unambiguous",
-			values:         []string{"15/01/2024", "25/12/2024"},
-			expectedLayout: "02/01/2006",
-		},
-		{
-			name:           "us_format_unambiguous",
-			values:         []string{"01/15/2024", "12/25/2024"},
-			expectedLayout: "01/02/2006",
-		},
-		{
-			name:           "uk_dash_format",
-			values:         []string{"15-01-2024", "25-12-2024"},
-			expectedLayout: "02-01-2006",
-		},
-		{
-			name:           "ambiguous_defaults_to_iso",
-			values:         []string{"2024-01-05"},
-			expectedLayout: "2006-01-02",
-		},
-		{
-			name:           "ambiguous_slash_defaults_to_uk",
-			values:         []string{"01/02/2024"},
-			expectedLayout: "02/01/2006", // UK is preferred over US when ambiguous
-		},
-		{
-			name:           "not_a_date",
-			values:         []string{"hello", "world"},
-			expectedLayout: "",
-		},
-		{
-			name:           "empty_values",
-			values:         []string{},
-			expectedLayout: "",
-		},
-		{
-			name:           "mixed_valid_invalid",
-			values:         []string{"2024-01-15", "not-a-date"},
-			expectedLayout: "",
-		},
+		// Valid ISO dates
+		{"2024-01-15", true},
+		{"2024-12-31", true},
+		{"2000-01-01", true},
+		{"  2024-01-15  ", true}, // Whitespace trimmed
+		// Invalid formats (UK/US not supported by BigQuery)
+		{"15/01/2024", false},
+		{"01/15/2024", false},
+		{"15-01-2024", false},
+		{"01-15-2024", false},
+		// Invalid values
+		{"not-a-date", false},
+		{"", false},
+		{"2024/01/15", false}, // Slash separator not valid for DATE
 	}
 
 	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			result := detectDateFormat(tc.values)
-			if result != tc.expectedLayout {
-				t.Errorf("detectDateFormat(%v) = %q, want %q", tc.values, result, tc.expectedLayout)
+		t.Run(tc.input, func(t *testing.T) {
+			result := isDate(tc.input)
+			if result != tc.expected {
+				t.Errorf("isDate(%q) = %v, want %v", tc.input, result, tc.expected)
+			}
+		})
+	}
+}
+
+func TestIsTime(t *testing.T) {
+	testCases := []struct {
+		input    string
+		expected bool
+	}{
+		// Valid times
+		{"10:30:00", true},
+		{"10:30:00.123456", true},
+		{"10:30:00.123", true},
+		{"23:59:59", true},
+		{"00:00:00", true},
+		{"  14:30:00  ", true}, // Whitespace trimmed
+		// Invalid times
+		{"10:30", false},     // Missing seconds
+		{"25:00:00", false},  // Invalid hour
+		{"10:60:00", false},  // Invalid minute
+		{"10:30:00Z", false}, // Has timezone - not TIME
+		{"hello", false},
+		{"", false},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.input, func(t *testing.T) {
+			result := isTime(tc.input)
+			if result != tc.expected {
+				t.Errorf("isTime(%q) = %v, want %v", tc.input, result, tc.expected)
+			}
+		})
+	}
+}
+
+func TestIsDatetime(t *testing.T) {
+	testCases := []struct {
+		input    string
+		expected bool
+	}{
+		// Valid datetimes
+		{"2024-01-15 10:30:00", true},
+		{"2024-01-15 10:30:00.123456", true},
+		{"2024-01-15T10:30:00", true},
+		{"2024-01-15T10:30:00.123456", true},
+		{"  2024-01-15 10:30:00  ", true}, // Whitespace trimmed
+		// Invalid - has timezone (should be TIMESTAMP)
+		{"2024-01-15 10:30:00Z", false},
+		{"2024-01-15 10:30:00 UTC", false},
+		{"2024-01-15 10:30:00-05:00", false},
+		{"2024-01-15T10:30:00Z", false},
+		// Invalid - not a datetime
+		{"2024-01-15", false}, // No time - DATE
+		{"10:30:00", false},   // No date - TIME
+		{"hello", false},
+		{"", false},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.input, func(t *testing.T) {
+			result := isDatetime(tc.input)
+			if result != tc.expected {
+				t.Errorf("isDatetime(%q) = %v, want %v", tc.input, result, tc.expected)
+			}
+		})
+	}
+}
+
+func TestIsTimestamp(t *testing.T) {
+	testCases := []struct {
+		input    string
+		expected bool
+	}{
+		// With Z suffix
+		{"2024-01-15T10:30:00Z", true},
+		{"2024-01-15T10:30:00.123456Z", true},
+		{"2024-01-15 10:30:00Z", true},
+		// With UTC
+		{"2024-01-15 10:30:00 UTC", true},
+		// With offset
+		{"2024-01-15T10:30:00-05:00", true},
+		{"2024-01-15 10:30:00 -05:00", true},
+		{"2024-01-15 10:30:00.220 -05:00", true},
+		// Slash date format
+		{"2018/08/19 12:11", true},
+		{"2018/08/19 12:11:35", true},
+		{"2018/08/19 12:11:35.22", true},
+		// Unix epoch is NOT auto-detected per BigQuery docs
+		{"1534680695", false},
+		{"1.534680695e12", false},
+		// Invalid cases
+		{"2024-01-15 10:30:00", false}, // No timezone - DATETIME
+		{"2024-01-15", false},          // No time - DATE
+		{"hello", false},
+		{"", false},
+		{"123", false},
+		{"0", false},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.input, func(t *testing.T) {
+			result := isTimestamp(tc.input)
+			if result != tc.expected {
+				t.Errorf("isTimestamp(%q) = %v, want %v", tc.input, result, tc.expected)
 			}
 		})
 	}
@@ -208,10 +286,22 @@ func TestInferFieldType(t *testing.T) {
 			expectedType: "BOOL",
 		},
 		{
+			name:         "bool_t_f",
+			rows:         [][]string{{"t"}, {"f"}, {"T"}},
+			colIndex:     0,
+			expectedType: "BOOL",
+		},
+		{
 			name:         "integer",
 			rows:         [][]string{{"1"}, {"42"}, {"-100"}},
 			colIndex:     0,
 			expectedType: "INTEGER",
+		},
+		{
+			name:         "integer_zero_one_not_bool",
+			rows:         [][]string{{"0"}, {"1"}, {"0"}},
+			colIndex:     0,
+			expectedType: "INTEGER", // Changed: 0/1 are not auto-detected as BOOL
 		},
 		{
 			name:         "float",
@@ -226,10 +316,52 @@ func TestInferFieldType(t *testing.T) {
 			expectedType: "DATE",
 		},
 		{
-			name:         "date_uk",
+			name:         "date_uk_now_string",
 			rows:         [][]string{{"15/01/2024"}, {"31/12/2024"}},
 			colIndex:     0,
-			expectedType: "DATE",
+			expectedType: "STRING", // Changed: UK format not supported
+		},
+		{
+			name:         "time",
+			rows:         [][]string{{"10:30:00"}, {"14:45:30.123456"}},
+			colIndex:     0,
+			expectedType: "TIME",
+		},
+		{
+			name:         "datetime",
+			rows:         [][]string{{"2024-01-15 10:30:00"}, {"2024-12-31 23:59:59"}},
+			colIndex:     0,
+			expectedType: "DATETIME",
+		},
+		{
+			name:         "datetime_with_t",
+			rows:         [][]string{{"2024-01-15T10:30:00"}, {"2024-12-31T23:59:59"}},
+			colIndex:     0,
+			expectedType: "DATETIME",
+		},
+		{
+			name:         "timestamp_with_z",
+			rows:         [][]string{{"2024-01-15T10:30:00Z"}, {"2024-12-31T23:59:59Z"}},
+			colIndex:     0,
+			expectedType: "TIMESTAMP",
+		},
+		{
+			name:         "timestamp_with_offset",
+			rows:         [][]string{{"2024-01-15 10:30:00-05:00"}, {"2024-12-31 23:59:59+00:00"}},
+			colIndex:     0,
+			expectedType: "TIMESTAMP",
+		},
+		{
+			name:         "timestamp_slash_date",
+			rows:         [][]string{{"2018/08/19 12:11:35"}, {"2018/08/20 14:30:00"}},
+			colIndex:     0,
+			expectedType: "TIMESTAMP",
+		},
+		{
+			name:         "unix_epoch_is_integer",
+			rows:         [][]string{{"1534680695"}, {"1534680700"}},
+			colIndex:     0,
+			expectedType: "INTEGER", // Unix timestamps are NOT auto-detected per BigQuery docs
 		},
 		{
 			name:         "string",
@@ -404,17 +536,59 @@ func TestConvertCSVValue(t *testing.T) {
 			wantErr:  false,
 		},
 		{
-			name:     "date_uk_to_iso",
+			name:     "date_uk_now_error",
 			value:    "15/01/2024",
 			colType:  types.DATE,
-			expected: "2024-01-15",
+			expected: nil,
+			wantErr:  true, // UK format not supported
+		},
+		{
+			name:     "date_us_now_error",
+			value:    "01/15/2024",
+			colType:  types.DATE,
+			expected: nil,
+			wantErr:  true, // US format not supported
+		},
+		{
+			name:     "time",
+			value:    "10:30:00",
+			colType:  types.TIME,
+			expected: "10:30:00.000000",
 			wantErr:  false,
 		},
 		{
-			name:     "date_us_to_iso",
-			value:    "01/15/2024",
-			colType:  types.DATE,
-			expected: "2024-01-15",
+			name:     "time_with_microseconds",
+			value:    "10:30:00.123456",
+			colType:  types.TIME,
+			expected: "10:30:00.123456",
+			wantErr:  false,
+		},
+		{
+			name:     "datetime",
+			value:    "2024-01-15 10:30:00",
+			colType:  types.DATETIME,
+			expected: "2024-01-15 10:30:00.000000",
+			wantErr:  false,
+		},
+		{
+			name:     "datetime_with_t",
+			value:    "2024-01-15T10:30:00",
+			colType:  types.DATETIME,
+			expected: "2024-01-15 10:30:00.000000",
+			wantErr:  false,
+		},
+		{
+			name:     "timestamp_z",
+			value:    "2024-01-15T10:30:00Z",
+			colType:  types.TIMESTAMP,
+			expected: "2024-01-15T10:30:00Z",
+			wantErr:  false,
+		},
+		{
+			name:     "timestamp_offset",
+			value:    "2024-01-15 10:30:00-05:00",
+			colType:  types.TIMESTAMP,
+			expected: "2024-01-15T15:30:00Z", // Converted to UTC
 			wantErr:  false,
 		},
 		{
@@ -490,9 +664,13 @@ func TestParseBoolValue(t *testing.T) {
 		{"true", true, false},
 		{"TRUE", true, false},
 		{"True", true, false},
+		{"t", true, false},
+		{"T", true, false},
 		{"false", false, false},
 		{"FALSE", false, false},
 		{"False", false, false},
+		{"f", false, false},
+		{"F", false, false},
 		{"yes", true, false},
 		{"YES", true, false},
 		{"no", false, false},
@@ -501,6 +679,7 @@ func TestParseBoolValue(t *testing.T) {
 		{"Y", true, false},
 		{"n", false, false},
 		{"N", false, false},
+		// 1/0 are still parsed (for explicit schemas) but not auto-detected
 		{"1", true, false},
 		{"0", false, false},
 		{"maybe", false, true},
@@ -534,12 +713,13 @@ func TestParseAndConvertDate(t *testing.T) {
 		wantErr  bool
 	}{
 		{"2024-01-15", "2024-01-15", false},
-		{"15/01/2024", "2024-01-15", false},
-		{"01/15/2024", "2024-01-15", false},
-		{"15-01-2024", "2024-01-15", false},
-		{"01-15-2024", "2024-01-15", false},
+		// UK/US formats not supported
+		{"15/01/2024", "", true},
+		{"01/15/2024", "", true},
+		{"15-01-2024", "", true},
+		{"01-15-2024", "", true},
 		{"invalid", "", true},
-		{"2024/01/15", "", true}, // Not a supported format
+		{"2024/01/15", "", true}, // Slashes are not supported
 	}
 
 	for _, tc := range testCases {
@@ -557,6 +737,111 @@ func TestParseAndConvertDate(t *testing.T) {
 			}
 			if result != tc.expected {
 				t.Errorf("parseAndConvertDate(%q) = %q, want %q", tc.input, result, tc.expected)
+			}
+		})
+	}
+}
+
+func TestParseTimeValue(t *testing.T) {
+	testCases := []struct {
+		input    string
+		expected string
+		wantErr  bool
+	}{
+		{"10:30:00", "10:30:00.000000", false},
+		{"10:30:00.123456", "10:30:00.123456", false},
+		{"10:30:00.123", "10:30:00.123000", false},
+		{"23:59:59", "23:59:59.000000", false},
+		{"00:00:00", "00:00:00.000000", false},
+		{"invalid", "", true},
+		{"10:30", "", true}, // Missing seconds
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.input, func(t *testing.T) {
+			result, err := parseTimeValue(tc.input)
+			if tc.wantErr {
+				if err == nil {
+					t.Errorf("parseTimeValue(%q) expected error but got none", tc.input)
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("parseTimeValue(%q) unexpected error: %v", tc.input, err)
+				return
+			}
+			if result != tc.expected {
+				t.Errorf("parseTimeValue(%q) = %q, want %q", tc.input, result, tc.expected)
+			}
+		})
+	}
+}
+
+func TestParseDatetimeValue(t *testing.T) {
+	testCases := []struct {
+		input    string
+		expected string
+		wantErr  bool
+	}{
+		{"2024-01-15 10:30:00", "2024-01-15 10:30:00.000000", false},
+		{"2024-01-15 10:30:00.123456", "2024-01-15 10:30:00.123456", false},
+		{"2024-01-15T10:30:00", "2024-01-15 10:30:00.000000", false},
+		{"2024-01-15T10:30:00.123456", "2024-01-15 10:30:00.123456", false},
+		{"invalid", "", true},
+		{"2024-01-15", "", true}, // No time
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.input, func(t *testing.T) {
+			result, err := parseDatetimeValue(tc.input)
+			if tc.wantErr {
+				if err == nil {
+					t.Errorf("parseDatetimeValue(%q) expected error but got none", tc.input)
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("parseDatetimeValue(%q) unexpected error: %v", tc.input, err)
+				return
+			}
+			if result != tc.expected {
+				t.Errorf("parseDatetimeValue(%q) = %q, want %q", tc.input, result, tc.expected)
+			}
+		})
+	}
+}
+
+func TestParseTimestampValue(t *testing.T) {
+	testCases := []struct {
+		input    string
+		expected string
+		wantErr  bool
+	}{
+		{"2024-01-15T10:30:00Z", "2024-01-15T10:30:00Z", false},
+		{"2024-01-15 10:30:00Z", "2024-01-15T10:30:00Z", false},
+		{"2024-01-15T10:30:00-05:00", "2024-01-15T15:30:00Z", false}, // Converted to UTC
+		{"2024-01-15 10:30:00 UTC", "2024-01-15T10:30:00Z", false},
+		{"2018/08/19 12:11:35", "2018-08-19T12:11:35Z", false}, // Slash date
+		// Unix timestamps CAN be parsed (for explicit schema) even though not auto-detected
+		{"1534680695", "2018-08-19T12:11:35Z", false},
+		{"invalid", "", true},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.input, func(t *testing.T) {
+			result, err := parseTimestampValue(tc.input)
+			if tc.wantErr {
+				if err == nil {
+					t.Errorf("parseTimestampValue(%q) expected error but got none", tc.input)
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("parseTimestampValue(%q) unexpected error: %v", tc.input, err)
+				return
+			}
+			if result != tc.expected {
+				t.Errorf("parseTimestampValue(%q) = %q, want %q", tc.input, result, tc.expected)
 			}
 		})
 	}
