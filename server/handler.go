@@ -339,6 +339,10 @@ func (h *uploadContentHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		errorResponse(ctx, w, errJobInternalError(err.Error()))
 		return
 	}
+	if job == nil {
+		errorResponse(ctx, w, errJobInternalError(fmt.Sprintf("job %s not found", jobID)))
+		return
+	}
 	if err := h.Handle(ctx, &uploadContentRequest{
 		server:  server,
 		project: project,
@@ -855,7 +859,11 @@ func convertCSVValue(value string, colType types.Type) (interface{}, error) {
 }
 
 func (h *uploadContentHandler) Handle(ctx context.Context, r *uploadContentRequest) error {
-	load := r.job.Content().Configuration.Load
+	content := r.job.Content()
+	if content == nil || content.Configuration == nil || content.Configuration.Load == nil {
+		return fmt.Errorf("job configuration is incomplete")
+	}
+	load := content.Configuration.Load
 	tableRef := load.DestinationTable
 	dataset, err := r.project.Dataset(ctx, tableRef.DatasetId)
 	if err != nil {

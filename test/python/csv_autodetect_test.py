@@ -14,6 +14,15 @@ from utils.big_query_emulator_test_case import (
 class TestCSVAutodetect(BigQueryEmulatorTestCase):
     """Tests CSV schema autodetection capabilities."""
 
+    def _get_table_ref(
+        self, dataset_id: str, table_id: str
+    ) -> bigquery.TableReference:
+        """Create a table reference using the non-deprecated API."""
+        return bigquery.TableReference(
+            bigquery.DatasetReference(BQ_EMULATOR_PROJECT_ID, dataset_id),
+            table_id,
+        )
+
     def test_autodetect_basic_types(self) -> None:
         """Test that basic types are correctly detected from CSV."""
         csv_data = """name,age,score,active
@@ -21,7 +30,7 @@ Alice,30,95.5,true
 Bob,25,88.0,false
 """
         self.client.create_dataset("test_dataset")
-        table_ref = self.client.dataset("test_dataset").table("test_table")
+        table_ref = self._get_table_ref("test_dataset", "test_table")
 
         job_config = bigquery.LoadJobConfig(
             source_format=bigquery.SourceFormat.CSV,
@@ -61,7 +70,7 @@ Birthday,2024-01-15
 Anniversary,2024-12-31
 """
         self.client.create_dataset("test_dataset")
-        table_ref = self.client.dataset("test_dataset").table("test_table")
+        table_ref = self._get_table_ref("test_dataset", "test_table")
 
         job_config = bigquery.LoadJobConfig(
             source_format=bigquery.SourceFormat.CSV,
@@ -90,14 +99,18 @@ Anniversary,2024-12-31
             ],
         )
 
-    def test_autodetect_date_uk_format(self) -> None:
-        """Test UK date format detection (DD/MM/YYYY)."""
+    def test_autodetect_date_uk_format_becomes_string(self) -> None:
+        """Test UK date format (DD/MM/YYYY) is not auto-detected as DATE.
+
+        BigQuery only supports ISO 8601 format (YYYY-MM-DD) for DATE auto-detection.
+        UK format dates are treated as STRING.
+        """
         csv_data = """event,event_date
 Birthday,15/01/2024
 Anniversary,31/12/2024
 """
         self.client.create_dataset("test_dataset")
-        table_ref = self.client.dataset("test_dataset").table("test_table")
+        table_ref = self._get_table_ref("test_dataset", "test_table")
 
         job_config = bigquery.LoadJobConfig(
             source_format=bigquery.SourceFormat.CSV,
@@ -112,17 +125,17 @@ Anniversary,31/12/2024
         )
         load_job.result()
 
-        # Verify schema
+        # Verify schema - UK format becomes STRING, not DATE
         table = self.client.get_table(table_ref)
         schema_dict = {f.name: f.field_type for f in table.schema}
-        self.assertEqual(schema_dict["event_date"], "DATE")
+        self.assertEqual(schema_dict["event_date"], "STRING")
 
-        # Verify data - should be converted to ISO format internally
+        # Verify data - kept as string values
         self.run_query_test(
             f"SELECT event, event_date FROM `{BQ_EMULATOR_PROJECT_ID}.test_dataset.test_table` ORDER BY event",
             expected_result=[
-                {"event": "Anniversary", "event_date": date(2024, 12, 31)},
-                {"event": "Birthday", "event_date": date(2024, 1, 15)},
+                {"event": "Anniversary", "event_date": "31/12/2024"},
+                {"event": "Birthday", "event_date": "15/01/2024"},
             ],
         )
 
@@ -135,7 +148,7 @@ Anniversary,31/12/2024
 4,200,
 """
         self.client.create_dataset("test_dataset")
-        table_ref = self.client.dataset("test_dataset").table("test_table")
+        table_ref = self._get_table_ref("test_dataset", "test_table")
 
         job_config = bigquery.LoadJobConfig(
             source_format=bigquery.SourceFormat.CSV,
@@ -175,7 +188,7 @@ Anniversary,31/12/2024
 2,false,no,N
 """
         self.client.create_dataset("test_dataset")
-        table_ref = self.client.dataset("test_dataset").table("test_table")
+        table_ref = self._get_table_ref("test_dataset", "test_table")
 
         job_config = bigquery.LoadJobConfig(
             source_format=bigquery.SourceFormat.CSV,
@@ -214,7 +227,7 @@ Anniversary,31/12/2024
 3,200
 """
         self.client.create_dataset("test_dataset")
-        table_ref = self.client.dataset("test_dataset").table("test_table")
+        table_ref = self._get_table_ref("test_dataset", "test_table")
 
         job_config = bigquery.LoadJobConfig(
             source_format=bigquery.SourceFormat.CSV,
@@ -251,7 +264,7 @@ Anniversary,31/12/2024
 Alice,100
 Bob,200
 """
-        table_ref = self.client.dataset("test_dataset").table("test_table")
+        table_ref = self._get_table_ref("test_dataset", "test_table")
 
         job_config = bigquery.LoadJobConfig(
             source_format=bigquery.SourceFormat.CSV,
@@ -283,7 +296,7 @@ Bob,200
 3,
 """
         self.client.create_dataset("test_dataset")
-        table_ref = self.client.dataset("test_dataset").table("test_table")
+        table_ref = self._get_table_ref("test_dataset", "test_table")
 
         job_config = bigquery.LoadJobConfig(
             source_format=bigquery.SourceFormat.CSV,
