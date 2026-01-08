@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -338,6 +339,10 @@ func (h *uploadContentHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		errorResponse(ctx, w, errJobInternalError(err.Error()))
 		return
 	}
+	if job == nil {
+		errorResponse(ctx, w, errJobInternalError(fmt.Sprintf("job %s not found", jobID)))
+		return
+	}
 	if err := h.Handle(ctx, &uploadContentRequest{
 		server:  server,
 		project: project,
@@ -408,8 +413,457 @@ func (h *uploadContentHandler) normalizeColumnNameForJSONData(columnMap map[stri
 	}
 }
 
+// CSV Schema Detection and Type Inference
+
+// dateLayout is the only format BigQuery supports for DATE auto-detection (ISO 8601)
+const dateLayout = "2006-01-02" // YYYY-MM-DD
+
+// isNullValue returns true if the value represents NULL
+func isNullValue(v string) bool {
+	lower := strings.ToLower(strings.TrimSpace(v))
+	return lower == "" || lower == "null"
+}
+
+// isBool returns true if the value can be auto-detected as a boolean.
+// Note: BigQuery can parse 1/0 as booleans but does not auto-detect them.
+func isBool(v string) bool {
+	lower := strings.ToLower(strings.TrimSpace(v))
+	switch lower {
+	case "true", "false", "t", "f", "yes", "no", "y", "n":
+		return true
+	}
+	return false
+}
+
+// isInteger returns true if the value can be parsed as an integer
+func isInteger(v string) bool {
+	_, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+	return err == nil
+}
+
+// isFloat returns true if the value can be parsed as a float
+func isFloat(v string) bool {
+	_, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+	return err == nil
+}
+
+// isDate returns true if the value can be parsed as an ISO date (YYYY-MM-DD)
+func isDate(v string) bool {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return false
+	}
+	_, err := time.Parse(dateLayout, v)
+	return err == nil
+}
+
+// timeLayouts are the formats BigQuery supports for TIME
+var timeLayouts = []string{
+	"15:04:05.000000", // HH:MM:SS.SSSSSS (microseconds)
+	"15:04:05.000",    // HH:MM:SS.SSS (milliseconds)
+	"15:04:05",        // HH:MM:SS
+}
+
+// isTime returns true if the value can be parsed as a TIME (HH:MM:SS[.SSSSSS])
+func isTime(v string) bool {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return false
+	}
+	for _, layout := range timeLayouts {
+		if _, err := time.Parse(layout, v); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// datetimeLayouts are the formats BigQuery supports for DATETIME
+var datetimeLayouts = []string{
+	"2006-01-02 15:04:05.000000",
+	"2006-01-02 15:04:05.000",
+	"2006-01-02 15:04:05",
+	"2006-01-02T15:04:05.000000",
+	"2006-01-02T15:04:05.000",
+	"2006-01-02T15:04:05",
+}
+
+// isDatetime returns true if the value can be parsed as a DATETIME
+// (date + time, no timezone)
+func isDatetime(v string) bool {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return false
+	}
+	// Reject if it looks like a timestamp (has timezone indicator)
+	if hasTimezoneIndicator(v) {
+		return false
+	}
+	for _, layout := range datetimeLayouts {
+		if _, err := time.Parse(layout, v); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// timestampLayouts for parsing timestamps with timezone
+var timestampLayouts = []string{
+	// With timezone offset (Z)
+	"2006-01-02T15:04:05.000000Z",
+	"2006-01-02T15:04:05.000Z",
+	"2006-01-02T15:04:05Z",
+	"2006-01-02T15:04Z",
+	"2006-01-02 15:04:05.000000Z",
+	"2006-01-02 15:04:05.000Z",
+	"2006-01-02 15:04:05Z",
+	"2006-01-02 15:04Z",
+	// With timezone offset (+/-HH:MM)
+	"2006-01-02T15:04:05.000000-07:00",
+	"2006-01-02T15:04:05.000-07:00",
+	"2006-01-02T15:04:05-07:00",
+	"2006-01-02T15:04-07:00",
+	"2006-01-02 15:04:05.000000-07:00",
+	"2006-01-02 15:04:05.000-07:00",
+	"2006-01-02 15:04:05-07:00",
+	"2006-01-02 15:04-07:00",
+	"2006-01-02 15:04:05.000000 -07:00",
+	"2006-01-02 15:04:05.000 -07:00",
+	"2006-01-02 15:04:05 -07:00",
+	"2006-01-02 15:04 -07:00",
+	// With timezone name (UTC)
+	"2006-01-02 15:04:05.000000 UTC",
+	"2006-01-02 15:04:05.000 UTC",
+	"2006-01-02 15:04:05 UTC",
+	"2006-01-02 15:04 UTC",
+	// Slash separator variants (BigQuery supports YYYY/MM/DD for timestamps)
+	"2006/01/02 15:04:05.000000",
+	"2006/01/02 15:04:05.000",
+	"2006/01/02 15:04:05",
+	"2006/01/02 15:04",
+}
+
+// tzOffsetRegex matches timezone offsets at the end of a string
+var tzOffsetRegex = regexp.MustCompile(`[+-]\d{2}:?\d{0,2}$`)
+
+// hasTimezoneIndicator checks if a string contains timezone information
+func hasTimezoneIndicator(v string) bool {
+	// Check for Z suffix
+	if strings.HasSuffix(v, "Z") {
+		return true
+	}
+	// Check for UTC suffix
+	if strings.HasSuffix(v, " UTC") || strings.HasSuffix(v, "UTC") {
+		return true
+	}
+	// Check for offset pattern like +05:00, -07:00, +0530, -05
+	return tzOffsetRegex.MatchString(v)
+}
+
+// unixTimestampRegex matches Unix epoch timestamps (integer or scientific notation)
+var unixTimestampRegex = regexp.MustCompile(`^-?\d+(\.\d+)?([eE][+-]?\d+)?$`)
+
+// isUnixTimestamp checks if the value looks like a Unix timestamp
+func isUnixTimestamp(v string) bool {
+	v = strings.TrimSpace(v)
+	if !unixTimestampRegex.MatchString(v) {
+		return false
+	}
+	// Parse as float to handle scientific notation
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return false
+	}
+	// Reasonable Unix timestamp range (1970-01-01 to ~2100)
+	// In seconds: 0 to ~4102444800
+	// In milliseconds: 0 to ~4102444800000
+	// Scientific notation like 1.534680695e12 represents milliseconds
+	if f >= 0 && f <= 4102444800 {
+		return true // Looks like seconds
+	}
+	if f >= 1e10 && f <= 4102444800000 {
+		return true // Looks like milliseconds
+	}
+	return false
+}
+
+// isTimestamp returns true if the value can be parsed as a TIMESTAMP
+// (has timezone info or slash-date format)
+// Note: Unix epoch timestamps are NOT auto-detected per BigQuery docs.
+func isTimestamp(v string) bool {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return false
+	}
+
+	// Note: Unix epoch timestamps are not auto-detected by BigQuery.
+	// They are treated as numeric types instead.
+
+	// Check if it has timezone indicator or slash-date format
+	hasSlashDate := len(v) >= 10 && v[4] == '/' && v[7] == '/'
+
+	if !hasTimezoneIndicator(v) && !hasSlashDate {
+		return false
+	}
+
+	// Try parsing with known layouts
+	for _, layout := range timestampLayouts {
+		if _, err := time.Parse(layout, v); err == nil {
+			return true
+		}
+	}
+
+	return false
+}
+
+// allMatch returns true if all values satisfy the predicate
+func allMatch(values []string, predicate func(string) bool) bool {
+	for _, v := range values {
+		if !predicate(v) {
+			return false
+		}
+	}
+	return true
+}
+
+// selectSampleRows selects a representative sample of rows for type inference
+func selectSampleRows(rows [][]string, maxSamples int) [][]string {
+	if len(rows) <= maxSamples {
+		return rows
+	}
+
+	samples := make([][]string, 0, maxSamples)
+	samples = append(samples, rows[0]) // First row
+
+	// Evenly space the remaining samples
+	remaining := maxSamples - 2
+	step := float64(len(rows)-2) / float64(remaining+1)
+	for i := 1; i <= remaining; i++ {
+		idx := int(float64(i) * step)
+		if idx > 0 && idx < len(rows)-1 {
+			samples = append(samples, rows[idx])
+		}
+	}
+
+	samples = append(samples, rows[len(rows)-1]) // Last row
+	return samples
+}
+
+// inferFieldType infers the BigQuery field type from sample values
+func inferFieldType(rows [][]string, colIndex int) string {
+	// Collect all non-empty, non-null values
+	values := make([]string, 0)
+	for _, row := range rows {
+		if colIndex < len(row) {
+			val := strings.TrimSpace(row[colIndex])
+			if !isNullValue(val) {
+				values = append(values, val)
+			}
+		}
+	}
+
+	if len(values) == 0 {
+		return "STRING" // Default to STRING for all-null columns
+	}
+
+	// Try each type in order of specificity
+	// Order matters: more restrictive types first
+
+	// 1. BOOL - most restrictive text patterns
+	if allMatch(values, isBool) {
+		return "BOOL"
+	}
+	// 2. INTEGER - pure integers only
+	if allMatch(values, isInteger) {
+		return "INTEGER"
+	}
+	// 3. FLOAT - numeric with decimals
+	if allMatch(values, isFloat) {
+		return "FLOAT"
+	}
+	// 4. TIMESTAMP - has timezone or Unix epoch
+	if allMatch(values, isTimestamp) {
+		return "TIMESTAMP"
+	}
+	// 5. DATETIME - date + time, no timezone
+	if allMatch(values, isDatetime) {
+		return "DATETIME"
+	}
+	// 6. DATE - date only (YYYY-MM-DD)
+	if allMatch(values, isDate) {
+		return "DATE"
+	}
+	// 7. TIME - time only (HH:MM:SS[.SSSSSS])
+	if allMatch(values, isTime) {
+		return "TIME"
+	}
+
+	return "STRING"
+}
+
+// detectSchema samples rows from a CSV and infers the schema
+func (h *uploadContentHandler) detectSchema(records [][]string, skipLeadingRows int64) (*bigqueryv2.TableSchema, error) {
+	if len(records) == 0 {
+		return nil, fmt.Errorf("empty csv file")
+	}
+
+	header := records[0]
+	dataRows := records[1:]
+
+	// SkipLeadingRows includes the header row, so when using autodetect
+	// (where row 0 is always the header), we should only skip additional
+	// rows if SkipLeadingRows > 1
+	if skipLeadingRows > 1 {
+		skip := int(skipLeadingRows) - 1 // -1 because header is already handled
+		if skip < len(dataRows) {
+			dataRows = dataRows[skip:]
+		}
+	}
+
+	if len(dataRows) == 0 {
+		// Only header, create schema with STRING types
+		fields := make([]*bigqueryv2.TableFieldSchema, len(header))
+		for i, colName := range header {
+			fields[i] = &bigqueryv2.TableFieldSchema{
+				Name: colName,
+				Type: "STRING",
+				Mode: "NULLABLE",
+			}
+		}
+		return &bigqueryv2.TableSchema{Fields: fields}, nil
+	}
+
+	// Sample rows for type inference
+	sampleRows := selectSampleRows(dataRows, 10)
+
+	// Infer type for each column
+	fields := make([]*bigqueryv2.TableFieldSchema, len(header))
+	for i, colName := range header {
+		inferredType := inferFieldType(sampleRows, i)
+		fields[i] = &bigqueryv2.TableFieldSchema{
+			Name: colName,
+			Type: inferredType,
+			Mode: "NULLABLE",
+		}
+	}
+
+	return &bigqueryv2.TableSchema{Fields: fields}, nil
+}
+
+// parseBoolValue parses various boolean representations.
+// Note: 1/0 are kept for explicit schema parsing even though they're not auto-detected.
+func parseBoolValue(v string) (bool, error) {
+	lower := strings.ToLower(strings.TrimSpace(v))
+	switch lower {
+	case "true", "t", "yes", "y", "1":
+		return true, nil
+	case "false", "f", "no", "n", "0":
+		return false, nil
+	default:
+		return false, fmt.Errorf("invalid boolean value: %s", v)
+	}
+}
+
+// parseAndConvertDate parses an ISO date (YYYY-MM-DD) and returns it
+func parseAndConvertDate(v string) (string, error) {
+	v = strings.TrimSpace(v)
+	if _, err := time.Parse(dateLayout, v); err != nil {
+		return "", fmt.Errorf("could not parse date: %s", v)
+	}
+	return v, nil // Already in ISO format
+}
+
+// parseTimeValue parses a time string and returns it in canonical format
+func parseTimeValue(v string) (string, error) {
+	v = strings.TrimSpace(v)
+	for _, layout := range timeLayouts {
+		if t, err := time.Parse(layout, v); err == nil {
+			// Return in canonical format HH:MM:SS.SSSSSS
+			return t.Format("15:04:05.000000"), nil
+		}
+	}
+	return "", fmt.Errorf("could not parse time: %s", v)
+}
+
+// parseDatetimeValue parses a datetime string and returns it in canonical format
+func parseDatetimeValue(v string) (string, error) {
+	v = strings.TrimSpace(v)
+	for _, layout := range datetimeLayouts {
+		if t, err := time.Parse(layout, v); err == nil {
+			// Return in canonical format YYYY-MM-DD HH:MM:SS.SSSSSS
+			return t.Format("2006-01-02 15:04:05.000000"), nil
+		}
+	}
+	return "", fmt.Errorf("could not parse datetime: %s", v)
+}
+
+// parseTimestampValue parses a timestamp string and returns it in RFC3339 format
+func parseTimestampValue(v string) (string, error) {
+	v = strings.TrimSpace(v)
+
+	// Handle Unix timestamp
+	if isUnixTimestamp(v) {
+		f, _ := strconv.ParseFloat(v, 64)
+		var t time.Time
+		if f >= 1e10 {
+			// Milliseconds - convert to time
+			t = time.UnixMilli(int64(f))
+		} else {
+			// Seconds (may have decimal microseconds)
+			sec := int64(f)
+			nsec := int64((f - float64(sec)) * 1e9)
+			t = time.Unix(sec, nsec)
+		}
+		return t.UTC().Format(time.RFC3339Nano), nil
+	}
+
+	// Try all timestamp layouts
+	for _, layout := range timestampLayouts {
+		if t, err := time.Parse(layout, v); err == nil {
+			return t.UTC().Format(time.RFC3339Nano), nil
+		}
+	}
+
+	return "", fmt.Errorf("could not parse timestamp: %s", v)
+}
+
+// convertCSVValue converts a string value to the appropriate Go type based on the column type
+func convertCSVValue(value string, colType types.Type) (interface{}, error) {
+	value = strings.TrimSpace(value)
+
+	// Handle NULL values
+	if isNullValue(value) {
+		return nil, nil
+	}
+
+	switch colType {
+	case types.INT64:
+		return strconv.ParseInt(value, 10, 64)
+	case types.FLOAT64:
+		return strconv.ParseFloat(value, 64)
+	case types.BOOL:
+		return parseBoolValue(value)
+	case types.DATE:
+		return parseAndConvertDate(value)
+	case types.TIME:
+		return parseTimeValue(value)
+	case types.DATETIME:
+		return parseDatetimeValue(value)
+	case types.TIMESTAMP:
+		return parseTimestampValue(value)
+	case types.STRING:
+		return value, nil
+	default:
+		return value, nil
+	}
+}
+
 func (h *uploadContentHandler) Handle(ctx context.Context, r *uploadContentRequest) error {
-	load := r.job.Content().Configuration.Load
+	content := r.job.Content()
+	if content == nil || content.Configuration == nil || content.Configuration.Load == nil {
+		return fmt.Errorf("job configuration is incomplete")
+	}
+	load := content.Configuration.Load
 	tableRef := load.DestinationTable
 	dataset, err := r.project.Dataset(ctx, tableRef.DatasetId)
 	if err != nil {
@@ -419,6 +873,28 @@ func (h *uploadContentHandler) Handle(ctx context.Context, r *uploadContentReque
 	if err != nil {
 		return err
 	}
+
+	// For CSV with autodetect, we need to read the file first to detect schema
+	var csvRecords [][]string
+	if load.SourceFormat == "CSV" {
+		csvRecords, err = csv.NewReader(r.reader).ReadAll()
+		if err != nil {
+			return fmt.Errorf("failed to read csv: %w", err)
+		}
+		if len(csvRecords) == 0 {
+			return fmt.Errorf("failed to find csv header")
+		}
+
+		// If autodetect is enabled and no schema provided, detect schema from CSV
+		if load.Autodetect && (load.Schema == nil || len(load.Schema.Fields) == 0) {
+			detectedSchema, err := h.detectSchema(csvRecords, load.SkipLeadingRows)
+			if err != nil {
+				return fmt.Errorf("failed to detect schema: %w", err)
+			}
+			load.Schema = detectedSchema
+		}
+	}
+
 	if table == nil {
 		if load.CreateDisposition == "CREATE_NEVER" {
 			return fmt.Errorf("`%s` is not found", tableRef.TableId)
@@ -454,17 +930,11 @@ func (h *uploadContentHandler) Handle(ctx context.Context, r *uploadContentReque
 	data := types.Data{}
 	switch sourceFormat {
 	case "CSV":
-		records, err := csv.NewReader(r.reader).ReadAll()
-		if err != nil {
-			return fmt.Errorf("failed to read csv: %w", err)
+		// csvRecords already populated above
+		if len(csvRecords) == 1 {
+			return nil // Only header, no data
 		}
-		if len(records) == 0 {
-			return fmt.Errorf("failed to find csv header")
-		}
-		if len(records) == 1 {
-			return nil
-		}
-		header := records[0]
+		header := csvRecords[0]
 		var ignoreHeader bool
 		for _, col := range header {
 			if _, exists := columnToType[col]; !exists {
@@ -485,18 +955,31 @@ func (h *uploadContentHandler) Handle(ctx context.Context, r *uploadContentReque
 				})
 			}
 		}
-		for _, record := range records[1:] {
+
+		// Determine data rows, respecting SkipLeadingRows
+		// SkipLeadingRows includes the header row, so we only skip additional
+		// rows if SkipLeadingRows > 1 (header already extracted as row 0)
+		dataRows := csvRecords[1:]
+		if load.SkipLeadingRows > 1 {
+			skip := int(load.SkipLeadingRows) - 1 // -1 because header is already handled
+			if skip < len(dataRows) {
+				dataRows = dataRows[skip:]
+			}
+		}
+
+		for _, record := range dataRows {
 			rowData := map[string]interface{}{}
 			if len(record) != len(columns) {
 				return fmt.Errorf("invalid column number: found broken row data: %v", record)
 			}
 			for i := 0; i < len(record); i++ {
 				colData := record[i]
-				if colData == "" {
-					rowData[columns[i].Name] = nil
-				} else {
-					rowData[columns[i].Name] = colData
+				// Convert value based on column type
+				converted, err := convertCSVValue(colData, columns[i].Type)
+				if err != nil {
+					return fmt.Errorf("failed to convert value %q for column %s: %w", colData, columns[i].Name, err)
 				}
+				rowData[columns[i].Name] = converted
 			}
 			data = append(data, rowData)
 		}
@@ -1114,9 +1597,11 @@ const (
 func (h *jobsInsertHandler) importFromGCS(ctx context.Context, r *jobsInsertRequest) (*bigqueryv2.Job, error) {
 	var opts []option.ClientOption
 	if host := os.Getenv(gcsEmulatorHostEnvName); host != "" {
+		// When STORAGE_EMULATOR_HOST is set, the storage client automatically
+		// detects emulator mode. We only need to add JSON reads and disable auth.
+		// Using option.WithEndpoint() can cause double paths with WithJSONReads().
 		opts = append(
 			opts,
-			option.WithEndpoint(fmt.Sprintf("%s/storage/v1/", host)),
 			storage.WithJSONReads(),
 			option.WithoutAuthentication(),
 		)
@@ -1247,9 +1732,10 @@ func (h *jobsInsertHandler) importFromGCSObject(ctx context.Context, r *jobsInse
 func (h *jobsInsertHandler) exportToGCS(ctx context.Context, r *jobsInsertRequest) (*bigqueryv2.Job, error) {
 	var opts []option.ClientOption
 	if host := os.Getenv(gcsEmulatorHostEnvName); host != "" {
+		// When STORAGE_EMULATOR_HOST is set, the storage client automatically
+		// detects emulator mode. We only need to disable auth.
 		opts = append(
 			opts,
-			option.WithEndpoint(fmt.Sprintf("%s/storage/v1/", host)),
 			option.WithoutAuthentication(),
 		)
 	}

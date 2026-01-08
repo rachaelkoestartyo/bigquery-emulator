@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"cloud.google.com/go/bigquery"
+	"cloud.google.com/go/civil"
 	"cloud.google.com/go/storage"
 	"github.com/fsouza/fake-gcs-server/fakestorage"
 	"github.com/goccy/bigquery-emulator/server"
@@ -2112,6 +2113,123 @@ func TestLoadJSON(t *testing.T) {
 		{ID: 2, Name: "Joan"},
 	}, rows); diff != "" {
 		t.Errorf("(-want +got):\n%s", diff)
+	}
+}
+
+func TestCSVAutodetect(t *testing.T) {
+	const (
+		projectName = "test"
+		datasetName = "dataset1"
+		tableName   = "test_table"
+	)
+
+	ctx := context.Background()
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Create dataset only (no table - it should be created with autodetected schema)
+	project := types.NewProject(projectName, types.NewDataset(datasetName))
+	if err := bqServer.Load(server.StructSource(project)); err != nil {
+		t.Fatal(err)
+	}
+
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Stop(ctx)
+	}()
+
+	client, err := bigquery.NewClient(
+		ctx,
+		projectName,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	// CSV with various types
+	csvData := `name,age,score,active,birth_date
+Alice,30,95.5,true,2024-01-15
+Bob,25,88.0,false,2024-06-30
+`
+
+	table := client.Dataset(datasetName).Table(tableName)
+	source := bigquery.NewReaderSource(strings.NewReader(csvData))
+	source.SourceFormat = bigquery.CSV
+	source.AutoDetect = true
+
+	loader := table.LoaderFrom(source)
+	job, err := loader.Run(ctx)
+	if err != nil {
+		t.Fatalf("failed to run load job: %v", err)
+	}
+	status, err := job.Wait(ctx)
+	if err != nil {
+		t.Fatalf("job wait failed: %v", err)
+	}
+	if status.Err() != nil {
+		t.Fatalf("job failed: %v", status.Err())
+	}
+
+	// Verify data was loaded correctly
+	query := client.Query("SELECT name, age, score, active, birth_date FROM " + datasetName + "." + tableName + " ORDER BY name")
+	it, err := query.Read(ctx)
+	if err != nil {
+		t.Fatalf("query failed: %v", err)
+	}
+
+	type csvRow struct {
+		Name      string     `bigquery:"name"`
+		Age       int64      `bigquery:"age"`
+		Score     float64    `bigquery:"score"`
+		Active    bool       `bigquery:"active"`
+		BirthDate civil.Date `bigquery:"birth_date"`
+	}
+
+	var rows []*csvRow
+	for {
+		var r csvRow
+		if err := it.Next(&r); err != nil {
+			if err == iterator.Done {
+				break
+			}
+			t.Fatal(err)
+		}
+		rows = append(rows, &r)
+	}
+
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 rows, got %d", len(rows))
+	}
+
+	// Verify first row (Alice)
+	if rows[0].Name != "Alice" {
+		t.Errorf("expected name=Alice, got %s", rows[0].Name)
+	}
+	if rows[0].Age != 30 {
+		t.Errorf("expected age=30, got %d", rows[0].Age)
+	}
+	if rows[0].Score != 95.5 {
+		t.Errorf("expected score=95.5, got %f", rows[0].Score)
+	}
+	if rows[0].Active != true {
+		t.Errorf("expected active=true, got %v", rows[0].Active)
+	}
+
+	// Verify second row (Bob)
+	if rows[1].Name != "Bob" {
+		t.Errorf("expected name=Bob, got %s", rows[1].Name)
+	}
+	if rows[1].Age != 25 {
+		t.Errorf("expected age=25, got %d", rows[1].Age)
+	}
+	if rows[1].Active != false {
+		t.Errorf("expected active=false, got %v", rows[1].Active)
 	}
 }
 
