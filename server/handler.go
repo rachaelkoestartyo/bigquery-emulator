@@ -3262,7 +3262,7 @@ type tablesInsertRequest struct {
 }
 
 func createTableMetadata(ctx context.Context, tx *connection.Tx, server *Server, project *metadata.Project, dataset *metadata.Dataset, table *bigqueryv2.Table) (*bigqueryv2.Table, *ServerError) {
-	now := time.Now().Unix()
+	now := time.Now().UnixMilli()
 	table.Id = fmt.Sprintf("%s:%s.%s", project.ID, dataset.ID, table.TableReference.TableId)
 	table.CreationTime = now
 	table.LastModifiedTime = uint64(now)
