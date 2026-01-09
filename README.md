@@ -1,30 +1,24 @@
-# BigQuery Emulator
+# BigQuery Emulator (Recidiviz fork)
 
-![Go](https://github.com/goccy/bigquery-emulator/workflows/Go/badge.svg)
-[![GoDoc](https://godoc.org/github.com/goccy/bigquery-emulator?status.svg)](https://pkg.go.dev/github.com/goccy/bigquery-emulator?tab=doc)
+The BigQuery emulator provides a way to launch a BigQuery server on your local machine for testing and development.
 
-
-BigQuery emulator server implemented in Go.  
-BigQuery emulator provides a way to launch a BigQuery server on your local machine for testing and development.
+The Recidiviz fork has many features, performance improvements, and bugfixes that are missing from the upstream repository.
 
 # Features
 
-- If you can choose the Go language as BigQuery client, you can launch a BigQuery emulator on the same process as the testing process by [httptest](https://pkg.go.dev/net/http/httptest) .
-- BigQuery emulator can be built as a static single binary and can be launched as a standalone process. So, you can use the BigQuery emulator from programs written in non-Go languages or such as the [bq](https://cloud.google.com/bigquery/docs/bq-command-line-tool) command, by specifying the address of the launched BigQuery emulator.
+- If you use the Go BigQuery client, you can launch the emulator within the testing process by [httptest](https://pkg.go.dev/net/http/httptest) .
+- BigQuery emulator can be launched as a standalone process. So, you can use the BigQuery emulator from programs written in non-Go languages or the [bq](https://cloud.google.com/bigquery/docs/bq-command-line-tool) command, by specifying the address of the launched BigQuery emulator.
 - BigQuery emulator utilizes SQLite for storage. You can select either memory or file as the data storage destination at startup, and if you set it to file, data can be persisted.
-- You can load seeds from a YAML file on startup
-
-# Status
-
-Although this project is still in **beta** version, many features are already available.
+- You can load seed data from a JSON or YAML file on startup
 
 ## BigQuery API
 
-We've been implemented all the [BigQuery APIs](https://cloud.google.com/bigquery/docs/reference/rest) except the API to manipulate IAM resources. It is possible that some options are not supported, in which case please report them in an Issue.
+We've implemented all the [BigQuery APIs](https://cloud.google.com/bigquery/docs/reference/rest) except the API to manipulate IAM resources. It is possible that some options are not supported, in which case please report them in an Issue.
 
-## Google Cloud Storage linkage
+## Google Cloud Storage
 
-BigQuery emulator supports loading data from Google Cloud Storage and extracting table data. Currently, only CSV and JSON data types can be used for extracting. If you use Google Cloud Storage emulator, please set `STORAGE_EMULATOR_HOST` environment variable.
+BigQuery emulator supports loading data from Google Cloud Storage and exporting table data. Currently, only CSV and JSON data types can be used for export.
+If you use Google Cloud Storage emulator, please set `STORAGE_EMULATOR_HOST` environment variable.
 
 ## BigQuery Storage API
 
@@ -41,20 +35,17 @@ For example, it has the following features.
 - Templated Argument Function
 - JavaScript UDF
 
-If you want to know the specific features supported, please see [here](https://github.com/goccy/go-zetasqlite#status)
+If you want to know which specific features are supported, please see [here](https://github.com/Recidiviz/go-zetasqlite#status)
 
-# Goals and Sponsors
+# Sponsor 
 
-The goal of this project is to build a server that behaves exactly like BigQuery from the BigQuery client's perspective. To do so, we need to support all features present in BigQuery ( Model API / Connection API / INFORMATION SCHEMA etc.. ) in addition to evaluating Google Standard SQL.
+If this project is of useful to you or your team, consider sponsoring the original creator [@goccy](https://github.com/goccy)
 
-However, this project is a personal project and I develop it on my days off and after work. I work full time and maintain a lot of OSS. Therefore, the time available for this project is also limited. Of course, I will be adding features and fixing bugs on a regular basis to get us closer to our goals, but if you want me to implement the features you want, please consider sponsoring me. Of course, you can use this project for free, but if you sponsor me, that will be my motivation. Especially if you are part of a commercial company and could use this project, I'd be glad if you could consider sponsoring me at the same time.
-
-# Install
-
+# Installation
 If Go is installed, you can install the latest version with the following command
 
 ```console
-$ go install github.com/goccy/bigquery-emulator/cmd/bigquery-emulator@latest
+$ go install github.com/Recidiviz/bigquery-emulator/cmd/bigquery-emulator@latest
 ```
 
 The BigQuery emulator depends on [go-zetasql](https://github.com/goccy/go-zetasql).
@@ -70,7 +61,7 @@ CXX=clang++
 You can also download the docker image with the following command
 
 ```console
-$ docker pull ghcr.io/goccy/bigquery-emulator:latest
+$ docker pull ghcr.io/Recidiviz/bigquery-emulator:latest
 ```
 
 You can also download the darwin(amd64) and linux(amd64) binaries directly from [releases](https://github.com/goccy/bigquery-emulator/releases)
@@ -110,7 +101,7 @@ $ ./bigquery-emulator --project=test
 If you want to use docker image to start emulator, specify like the following.
 
 ```console
-$ docker run -it ghcr.io/goccy/bigquery-emulator:latest --project=test
+$ docker run -it ghcr.io/Recidiviz/bigquery-emulator:latest --project=test
 ```
 
 ## How to use from bq client
@@ -123,7 +114,7 @@ $ ./bigquery-emulator --project=test --data-from-yaml=./server/testdata/data.yam
 [bigquery-emulator] gRPC server listening at 0.0.0.0:9060
 ```
 
-* `server/testdata/data.yaml` is [here](https://github.com/goccy/bigquery-emulator/blob/main/server/testdata/data.yaml)
+* `server/testdata/data.yaml` is [here](https://github.com/Recidiviz/bigquery-emulator/blob/main/server/testdata/data.yaml)
 
 ### 2. Call endpoint from bq client
 
@@ -191,7 +182,7 @@ result = client.query(sql).to_dataframe(bqstorage_client=read_client)
 # Synopsis
 
 If you use the Go language as a BigQuery client, you can launch the BigQuery emulator on the same process as the testing process.  
-Please imports `github.com/goccy/bigquery-emulator/server` ( and `github.com/goccy/bigquery-emulator/types` ) and you can use `server.New` API to create the emulator server instance.
+Import `github.com/Recidiviz/bigquery-emulator/server` ( and `github.com/Recidiviz/bigquery-emulator/types` ) and you can use `server.New` API to create the emulator server instance.
 
 See the API reference for more information: https://pkg.go.dev/github.com/goccy/bigquery-emulator
 
@@ -203,8 +194,8 @@ import (
   "fmt"
 
   "cloud.google.com/go/bigquery"
-  "github.com/goccy/bigquery-emulator/server"
-  "github.com/goccy/bigquery-emulator/types"
+  "github.com/Recidiviz/bigquery-emulator/server"
+  "github.com/Recidiviz/bigquery-emulator/types"
   "google.golang.org/api/iterator"
   "google.golang.org/api/option"
 )
@@ -248,68 +239,29 @@ func main() {
     panic(err)
   }
   defer client.Close()
-  routineName, err := client.Dataset(datasetID).Routine(routineID).Identifier(bigquery.StandardSQLID)
-  if err != nil {
-    panic(err)
-  }
-  sql := fmt.Sprintf(`
-CREATE FUNCTION %s(
-  arr ARRAY<STRUCT<name STRING, val INT64>>
-) AS (
-  (SELECT SUM(IF(elem.name = "foo",elem.val,null)) FROM UNNEST(arr) AS elem)
-)`, routineName)
-  job, err := client.Query(sql).Run(ctx)
-  if err != nil {
-    panic(err)
-  }
-  status, err := job.Wait(ctx)
-  if err != nil {
-    panic(err)
-  }
-  if err := status.Err(); err != nil {
-    panic(err)
-  }
-
-  it, err := client.Query(fmt.Sprintf(`
-SELECT %s([
-  STRUCT<name STRING, val INT64>("foo", 10),
-  STRUCT<name STRING, val INT64>("bar", 40),
-  STRUCT<name STRING, val INT64>("foo", 20)
-])`, routineName)).Read(ctx)
-  if err != nil {
-    panic(err)
-  }
-
-  var row []bigquery.Value
-  if err := it.Next(&row); err != nil {
-    if err == iterator.Done {
-        return
-    }
-    panic(err)
-  }
-  fmt.Println(row[0]) // 30
 }
 ```
 
 # Debugging
 
-If you have specified a database file when starting `bigquery-emulator`, you can check the status of the database by using the `zetasqlite-cli` tool. See [here](https://github.com/goccy/go-zetasqlite/tree/main/cmd/zetasqlite-cli#readme) for details.
+If you have specified a database file when starting `bigquery-emulator`, you can check the status of the database by using the `zetasqlite-cli` tool. See [here](https://github.com/Recidiviz/go-zetasqlite/tree/main/cmd/zetasqlite-cli#readme) for details.
 
 # How it works
 
 ## BigQuery Emulator Architecture Overview
 
-After receiving ZetaSQL Query via REST API from bq or Client SDK for each language, go-zetasqlite parses and analyzes the ZetaSQL Query to output AST. After generating a SQLite query from the AST, go-sqite3 is used to access the SQLite Database.
+After receiving a query, `go-zetasqlite` parses and analyzes the input query using `google/zetasql`. 
+Query metadata objects are extracted from the AST, then transformed into a SQLite-compatible query.
+The [modernc.org/sqlite](https://modernc.org/sqlite) driver is then used to access the SQLite Database.
 
 <img width="600px" src="https://user-images.githubusercontent.com/209884/196145011-e35c2df4-5f5d-43ce-b7df-08cd130b5d31.png"></img>
-
 
 
 ## Type Conversion Flow
 
 BigQuery has a number of types that do not exist in SQLite (e.g. ARRAY and STRUCT).
-In order to handle them in SQLite, go-zetasqlite encodes all types except `INT64` / `FLOAT64` / `BOOL` with the type information and data combination and stores them in SQLite.
-When using the encoded data, decode the data via a custom function registered with go-sqlite3 before use.
+In order to handle them in SQLite, `go-zetasqlite` encodes all types except `INT64` / `FLOAT64` / `BOOL` with the type information and data combination.
+When using the encoded data, the data is decoded via a custom function registered with driver before use.
 
 <img width="600px" src="https://user-images.githubusercontent.com/209884/196145033-aa032878-7e01-4ec7-9a23-b174b87e1a24.png"></img>
 
