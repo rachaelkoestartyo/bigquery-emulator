@@ -37,7 +37,7 @@ func (t *Table) ToBigqueryV2(projectID, datasetID string) *bigqueryv2.Table {
 	for i, col := range t.Columns {
 		fields[i] = col.TableFieldSchema()
 	}
-	now := time.Now().Unix()
+	now := time.Now().UnixMilli()
 	return &bigqueryv2.Table{
 		Type: "TABLE",
 		Kind: "bigquery#table",

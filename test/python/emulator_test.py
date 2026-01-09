@@ -1123,3 +1123,35 @@ FROM UNNEST([
                 }
             ],
         )
+
+    def test_table_metadata_timestamp_format(self) -> None:
+        """Tests resolution of https://github.com/goccy/bigquery-emulator/issues/432
+
+        Table metadata timestamps (creationTime, lastModifiedTime) should be in
+        Unix milliseconds (13 digits), not Unix seconds (10 digits), to match
+        the real BigQuery API behavior.
+        """
+        address = BigQueryAddress(dataset_id=_DATASET_1, table_id=_TABLE_1)
+        self.create_mock_table(
+            address,
+            schema=[
+                bigquery.SchemaField(
+                    "a",
+                    field_type=bigquery.enums.SqlTypeNames.INTEGER.value,
+                    mode="REQUIRED",
+                ),
+            ],
+        )
+
+        # Get the table metadata
+        table = self.client.get_table(self._table_ref_for_address(address))
+
+        # Verify that created timestamp is set and in a reasonable range
+        self.assertIsNotNone(table.created)
+        self.assertIsNotNone(table.modified)
+
+        # The timestamps should be datetime objects that correspond to a recent time
+        # (not 1970 which would happen if milliseconds were interpreted as seconds)
+        now = datetime.datetime.now()
+        self.assertGreaterEqual(table.created.year, now.year)
+        self.assertGreaterEqual(table.modified.year, now.year)
