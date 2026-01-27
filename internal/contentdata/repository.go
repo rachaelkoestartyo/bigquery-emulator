@@ -3,6 +3,7 @@ package contentdata
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"fmt"
 	"github.com/goccy/go-json"
 	"github.com/goccy/go-zetasqlite"
@@ -464,6 +465,7 @@ func (r *Repository) AddTableData(ctx context.Context, tx *connection.Tx, projec
 			if value, found := data[column.Name]; found {
 				isTimestampColumn := column.Type == types.TIMESTAMP
 				isJsonColumn := column.Type == types.JSON
+				isBytesColumn := column.Type == types.BYTES
 				inputString, isInputString := value.(string)
 
 				if isInputString && isTimestampColumn {
@@ -481,6 +483,21 @@ func (r *Repository) AddTableData(ctx context.Context, tx *connection.Tx, projec
 						return fmt.Errorf("failed to unmarshal json value [%s]: %w", inputString, err)
 					}
 					values = append(values, jsonValue)
+					continue
+				}
+
+				if isInputString && isBytesColumn {
+					if inputString == "" {
+						values = append(values, []byte{})
+						continue
+					}
+
+					decoded, err := base64.StdEncoding.DecodeString(inputString)
+					if err != nil {
+						return fmt.Errorf("failed to decode base64 bytes: %v - %w", inputString, err)
+					}
+
+					values = append(values, decoded)
 					continue
 				}
 
