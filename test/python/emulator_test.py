@@ -1,4 +1,5 @@
 """Tests capabilities of the BigQuery emulator."""
+import base64
 import datetime
 from datetime import date
 from decimal import Decimal
@@ -931,7 +932,7 @@ FROM UNNEST([
                     "int_col": 42,
                     "float_col": 3.14,
                     "bool_col": True,
-                    "bytes_col": "abc",
+                    "bytes_col": base64.b64encode(b"abc").decode('utf-8'),
                     "date_col": "2024-01-01",
                     "datetime_col": "2024-01-01T12:00:00",
                     "timestamp_col": "2024-01-01T12:00:00Z",
@@ -988,7 +989,7 @@ FROM UNNEST([
                 "int_col": 42,
                 "float_col": 3.14,
                 "bool_col": True,
-                "bytes_col": "abc".encode("utf-8"),
+                "bytes_col": b"abc",
                 "time_col": datetime.time(12, 0, 0),
                 "date_col": datetime.date(2024, 1, 1),
                 "datetime_col": datetime.datetime(2024, 1, 1, 12, 0),
@@ -1155,3 +1156,110 @@ FROM UNNEST([
         now = datetime.datetime.now()
         self.assertGreaterEqual(table.created.year, now.year)
         self.assertGreaterEqual(table.modified.year, now.year)
+
+    def test_bytes_field_base64_encoding(self) -> None:
+        """Tests resolution of https://github.com/Recidiviz/bigquery-emulator/pull/55
+
+        Verifies that BYTES fields are correctly handled with base64 encoding.
+
+        According to BigQuery documentation:
+        - BYTES fields must be base64-encoded when sent via JSON API (tabledata.insertAll)
+        - BYTES fields are returned as base64-encoded strings when queried
+        - The emulator should NOT double-encode values that are already base64-encoded
+
+        Reference: https://cloud.google.com/bigquery/docs/reference/rest/v2/tabledata/insertAll
+        The BigQuery client library automatically base64-encodes byte strings before sending.
+
+        Example from the bug report:
+        - Original bytes: b'Hello' (bytes [72, 101, 108, 108, 111])
+        - Expected base64: 'SGVsbG8='
+        - Bug behavior (double-encoded): 'U0dWc2JHOD0=' (base64 of 'SGVsbG8=')
+        """
+        address = BigQueryAddress(dataset_id=_DATASET_1, table_id=_TABLE_1)
+        self.create_mock_table(
+            address,
+            schema=[
+                bigquery.SchemaField(
+                    "id",
+                    field_type=bigquery.enums.SqlTypeNames.INTEGER.value,
+                    mode="REQUIRED",
+                ),
+                bigquery.SchemaField(
+                    "binary_data",
+                    field_type=bigquery.enums.SqlTypeNames.BYTES.value,
+                    mode="NULLABLE",
+                ),
+            ],
+        )
+
+        # Test case 1: Simple ASCII string "Hello"
+        # Original bytes: b'Hello'
+        # Expected base64: 'SGVsbG8='
+        hello_bytes = b'Hello'
+        hello_base64 = base64.b64encode(hello_bytes).decode('utf-8')
+        self.assertEqual(hello_base64, 'SGVsbG8=')
+
+        # Test case 2: Binary data with various byte values
+        binary_bytes = bytes([0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x00, 0xFF, 0xAB])
+        binary_base64 = base64.b64encode(binary_bytes).decode('utf-8')
+
+        # Test case 3: Empty bytes
+        empty_bytes = b''
+        empty_base64 = base64.b64encode(empty_bytes).decode('utf-8')
+
+        # Load data into table
+        # The BigQuery Python client expects base64-encoded strings for BYTES fields
+        self.load_rows_into_table(
+            address,
+            data=[
+                {"id": 1, "binary_data": hello_bytes},
+                {"id": 2, "binary_data": binary_bytes},
+                {"id": 3, "binary_data": empty_bytes},
+                {"id": 4, "binary_data": None},
+            ],
+        )
+
+        # Query the data back and verify it's not double-encoded
+        # Note: While BigQuery's JSON API returns BYTES as base64-encoded strings,
+        # the Python client library represents them as bytes objects for consistency
+        self.run_query_test(
+            f"SELECT id, binary_data FROM `{self.project_id}.{address.dataset_id}.{address.table_id}` ORDER BY id;",
+            expected_result=[
+                {"id": 1, "binary_data": hello_bytes},
+                {"id": 2, "binary_data": binary_bytes},
+                {"id": 3, "binary_data": empty_bytes},
+                {"id": 4, "binary_data": None},
+            ],
+        )
+
+        # Additional verification: use TO_BASE64 function to explicitly convert
+        # This should produce the same result as the stored value
+        query_with_to_base64 = f"""
+            SELECT
+                id,
+                binary_data,
+                TO_BASE64(binary_data) as explicit_base64
+            FROM `{self.project_id}.{address.dataset_id}.{address.table_id}`
+            WHERE binary_data IS NOT NULL
+            ORDER BY id;
+        """
+        self.run_query_test(
+            query_with_to_base64,
+            expected_result=[
+                {
+                    "id": 1,
+                    "binary_data": hello_bytes,
+                    "explicit_base64": hello_base64
+                },
+                {
+                    "id": 2,
+                    "binary_data": binary_bytes,
+                    "explicit_base64": binary_base64
+                },
+                {
+                    "id": 3,
+                    "binary_data": empty_bytes,
+                    "explicit_base64": empty_base64
+                },
+            ],
+        )
