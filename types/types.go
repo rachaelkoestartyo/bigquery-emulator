@@ -486,6 +486,7 @@ func NewTableWithSchema(t *bigqueryv2.Table, data Data) (*Table, error) {
 		for k, v := range row {
 			field, exists := nameToFieldMap[k]
 			if !exists {
+				// Skip unknown fields - validation should be done by the caller
 				continue
 			}
 			v, err := normalizeData(v, field)
