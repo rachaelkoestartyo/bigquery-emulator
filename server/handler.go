@@ -7,7 +7,6 @@ import (
 	"encoding/csv"
 	"errors"
 	"fmt"
-	"github.com/goccy/bigquery-emulator/internal/contentdata"
 	"html"
 	"io"
 	"mime"
@@ -20,6 +19,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/goccy/bigquery-emulator/internal/contentdata"
 
 	"cloud.google.com/go/storage"
 	"github.com/goccy/go-json"
@@ -3045,6 +3046,13 @@ func (h *tabledataInsertAllHandler) Handle(ctx context.Context, r *tabledataInse
 		}
 		data = append(data, rowData)
 	}
+
+	// Validate data against schema before insert
+	validationErrors := types.ValidateDataAgainstSchema(content.Schema, data)
+	if len(validationErrors) > 0 {
+		return buildInsertErrorsResponse(validationErrors, len(data)), nil
+	}
+
 	tableDef, err := types.NewTableWithSchema(content, data)
 	if err != nil {
 		return nil, err
@@ -3062,6 +3070,50 @@ func (h *tabledataInsertAllHandler) Handle(ctx context.Context, r *tabledataInse
 		return nil, err
 	}
 	return &bigqueryv2.TableDataInsertAllResponse{}, nil
+}
+
+// buildInsertErrorsResponse builds a BigQuery-compatible error response for insertAll validation errors.
+// When any row has an unknown field, the entire batch is rejected:
+// - Invalid rows get an "invalid" error with the unknown field name
+// - Valid rows get a "stopped" error (they weren't processed because the batch failed)
+func buildInsertErrorsResponse(errors []types.FieldValidationError, totalRows int) *bigqueryv2.TableDataInsertAllResponse {
+	invalidRows := make(map[int]bool)
+	var insertErrors []*bigqueryv2.TableDataInsertAllResponseInsertErrors
+
+	// Add "invalid" errors for rows with unknown fields
+	for _, e := range errors {
+		invalidRows[e.RowIndex] = true
+		insertErrors = append(insertErrors, &bigqueryv2.TableDataInsertAllResponseInsertErrors{
+			Index: int64(e.RowIndex),
+			Errors: []*bigqueryv2.ErrorProto{{
+				DebugInfo:       "",
+				Reason:          "invalid",
+				Location:        e.FieldName,
+				Message:         fmt.Sprintf("no such field: %s.", e.FieldName),
+				ForceSendFields: []string{"DebugInfo"}, // Ensure DebugInfo is included even when empty
+			}},
+			ForceSendFields: []string{"Index"}, // Ensure Index is included even when 0
+		})
+	}
+
+	// Add "stopped" errors for valid rows (they weren't inserted because batch failed)
+	for i := 0; i < totalRows; i++ {
+		if !invalidRows[i] {
+			insertErrors = append(insertErrors, &bigqueryv2.TableDataInsertAllResponseInsertErrors{
+				Index:           int64(i),
+				ForceSendFields: []string{"Index"}, // Ensure Index is included even when 0
+				Errors: []*bigqueryv2.ErrorProto{{
+					Reason:          "stopped",
+					Location:        "",
+					DebugInfo:       "",
+					Message:         "",
+					ForceSendFields: []string{"Location", "DebugInfo", "Message"}, // Ensure all empty fields are included
+				}},
+			})
+		}
+	}
+
+	return &bigqueryv2.TableDataInsertAllResponse{InsertErrors: insertErrors}
 }
 
 func (h *tabledataListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {

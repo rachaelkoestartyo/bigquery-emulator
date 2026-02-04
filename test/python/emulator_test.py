@@ -1,4 +1,5 @@
 """Tests capabilities of the BigQuery emulator."""
+
 import base64
 import datetime
 from datetime import date
@@ -1254,12 +1255,240 @@ FROM UNNEST([
                 {
                     "id": 2,
                     "binary_data": binary_bytes,
-                    "explicit_base64": binary_base64
+                    "explicit_base64": binary_base64,
+                },
+                {"id": 3, "binary_data": empty_bytes, "explicit_base64": empty_base64},
+            ],
+        )
+
+    def test_insert_unknown_fields_valid_row(self) -> None:
+        """
+        Tests resolution of https://github.com/goccy/bigquery-emulator/issues/421
+        """
+        address = BigQueryAddress(dataset_id=_DATASET_1, table_id=_TABLE_1)
+        self.create_mock_table(
+            address,
+            schema=[
+                bigquery.SchemaField(
+                    "name",
+                    field_type=bigquery.enums.SqlTypeNames.STRING.value,
+                    mode="REQUIRED",
+                ),
+                bigquery.SchemaField(
+                    "age",
+                    field_type=bigquery.enums.SqlTypeNames.INTEGER.value,
+                    mode="NULLABLE",
+                ),
+            ],
+        )
+
+        table = self.client.get_table(self._table_ref_for_address(address))
+        valid_rows = [{"name": "Alice", "age": 30}]
+        errors = self.client.insert_rows_json(table, valid_rows)
+
+        self.assertEqual(errors, [])
+
+    def test_insert_unknown_fields_one_bad_field(self) -> None:
+        """
+        Tests resolution of https://github.com/goccy/bigquery-emulator/issues/421
+        Test that inserting a row with one unknown field returns an error with the field name.
+        """
+        address = BigQueryAddress(dataset_id=_DATASET_1, table_id=_TABLE_1)
+        self.create_mock_table(
+            address,
+            schema=[
+                bigquery.SchemaField(
+                    "name",
+                    field_type=bigquery.enums.SqlTypeNames.STRING.value,
+                    mode="REQUIRED",
+                ),
+                bigquery.SchemaField(
+                    "age",
+                    field_type=bigquery.enums.SqlTypeNames.INTEGER.value,
+                    mode="NULLABLE",
+                ),
+            ],
+        )
+
+        table = self.client.get_table(self._table_ref_for_address(address))
+        bad_rows = [{"name": "Bob", "age": 25, "unknown_field": "value"}]
+        errors = self.client.insert_rows_json(table, bad_rows)
+
+        self.assertEqual(
+            errors,
+            [
+                {
+                    "index": 0,
+                    "errors": [
+                        {
+                            "reason": "invalid",
+                            "location": "unknown_field",
+                            "debugInfo": "",
+                            "message": "no such field: unknown_field.",
+                        }
+                    ],
+                }
+            ],
+        )
+
+    def test_insert_unknown_fields_multiple_bad_fields(self) -> None:
+        """
+        Tests resolution of https://github.com/goccy/bigquery-emulator/issues/421
+        Test that inserting a row with multiple unknown fields returns an error with one field.
+        """
+        address = BigQueryAddress(dataset_id=_DATASET_1, table_id=_TABLE_1)
+        self.create_mock_table(
+            address,
+            schema=[
+                bigquery.SchemaField(
+                    "name",
+                    field_type=bigquery.enums.SqlTypeNames.STRING.value,
+                    mode="REQUIRED",
+                ),
+                bigquery.SchemaField(
+                    "age",
+                    field_type=bigquery.enums.SqlTypeNames.INTEGER.value,
+                    mode="NULLABLE",
+                ),
+            ],
+        )
+
+        table = self.client.get_table(self._table_ref_for_address(address))
+        bad_rows = [
+            {"name": "Charlie", "unknown1": "a", "unknown2": "b", "unknown3": "c"}
+        ]
+        errors = self.client.insert_rows_json(table, bad_rows)
+
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0]["index"], 0)
+        self.assertEqual(len(errors[0]["errors"]), 1)
+        self.assertEqual(errors[0]["errors"][0]["reason"], "invalid")
+        # One of the unknown fields should be reported
+        self.assertIn(
+            errors[0]["errors"][0]["location"], ["unknown1", "unknown2", "unknown3"]
+        )
+        self.assertIn("no such field:", errors[0]["errors"][0]["message"])
+
+    def test_insert_unknown_fields_multiple_bad_rows(self) -> None:
+        """
+        Tests resolution of https://github.com/goccy/bigquery-emulator/issues/421
+        Test that inserting multiple bad rows returns errors for all of them.
+        """
+        address = BigQueryAddress(dataset_id=_DATASET_1, table_id=_TABLE_1)
+        self.create_mock_table(
+            address,
+            schema=[
+                bigquery.SchemaField(
+                    "name",
+                    field_type=bigquery.enums.SqlTypeNames.STRING.value,
+                    mode="REQUIRED",
+                ),
+                bigquery.SchemaField(
+                    "age",
+                    field_type=bigquery.enums.SqlTypeNames.INTEGER.value,
+                    mode="NULLABLE",
+                ),
+            ],
+        )
+
+        table = self.client.get_table(self._table_ref_for_address(address))
+        bad_rows = [
+            {"name": "Invalid1", "bad_field1": "x"},
+            {"name": "Invalid2", "bad_field2": "y"},
+        ]
+        errors = self.client.insert_rows_json(table, bad_rows)
+
+        # Both rows should have errors
+        self.assertEqual(len(errors), 2)
+
+        error_indices = {e["index"] for e in errors}
+        self.assertEqual(error_indices, {0, 1})
+
+        for error in errors:
+            self.assertEqual(len(error["errors"]), 1)
+            self.assertEqual(error["errors"][0]["reason"], "invalid")
+            self.assertIn("no such field:", error["errors"][0]["message"])
+
+    def test_insert_unknown_fields_mixed_valid_and_invalid(self) -> None:
+        """
+        Tests resolution of https://github.com/goccy/bigquery-emulator/issues/421
+
+        Test inserting mix of valid and invalid rows.
+        Invalid rows should have 'invalid' errors with field location.
+        Valid rows should have 'stopped' errors when other rows fail.
+        """
+        address = BigQueryAddress(dataset_id=_DATASET_1, table_id=_TABLE_1)
+        self.create_mock_table(
+            address,
+            schema=[
+                bigquery.SchemaField(
+                    "name",
+                    field_type=bigquery.enums.SqlTypeNames.STRING.value,
+                    mode="REQUIRED",
+                ),
+                bigquery.SchemaField(
+                    "age",
+                    field_type=bigquery.enums.SqlTypeNames.INTEGER.value,
+                    mode="NULLABLE",
+                ),
+            ],
+        )
+
+        table = self.client.get_table(self._table_ref_for_address(address))
+        mixed_rows = [
+            {"name": "Valid1", "age": 20},  # row 0: valid
+            {"name": "Invalid1", "bad_field": "x"},  # row 1: invalid
+            {"name": "Valid2", "age": 30},  # row 2: valid
+            {"name": "Invalid2", "bad1": "a", "bad2": "b"},  # row 3: invalid
+        ]
+        errors = self.client.insert_rows_json(table, mixed_rows)
+
+        self.assertEqual(
+            errors,
+            [
+                {
+                    "index": 1,
+                    "errors": [
+                        {
+                            "reason": "invalid",
+                            "location": "bad_field",
+                            "debugInfo": "",
+                            "message": "no such field: bad_field.",
+                        }
+                    ],
                 },
                 {
-                    "id": 3,
-                    "binary_data": empty_bytes,
-                    "explicit_base64": empty_base64
+                    "index": 3,
+                    "errors": [
+                        {
+                            "reason": "invalid",
+                            "location": "bad1",
+                            "debugInfo": "",
+                            "message": "no such field: bad1.",
+                        }
+                    ],
+                },
+                {
+                    "index": 0,
+                    "errors": [
+                        {
+                            "reason": "stopped",
+                            "location": "",
+                            "debugInfo": "",
+                            "message": "",
+                        }
+                    ],
+                },
+                {
+                    "index": 2,
+                    "errors": [
+                        {
+                            "reason": "stopped",
+                            "location": "",
+                            "debugInfo": "",
+                            "message": "",
+                        }
+                    ],
                 },
             ],
         )
