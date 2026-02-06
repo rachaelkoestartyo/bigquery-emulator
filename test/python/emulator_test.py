@@ -671,7 +671,7 @@ GROUP BY b;
             ],
         )
         with self.assertRaisesRegex(
-                RuntimeError, "failed to convert 202-06-06 to time.Time type"
+            RuntimeError, "failed to convert 202-06-06 to time.Time type"
         ):
             self.load_rows_into_table(address, data=[{"a": "202-06-06"}])
 
@@ -703,7 +703,7 @@ FROM `{self.project_id}.{address.dataset_id}.{address.table_id}`
 GROUP BY b;
 """
         with self.assertRaisesRegex(
-                Exception, r"ARRAY_AGG: input value must be not null"
+            Exception, r"ARRAY_AGG: input value must be not null"
         ):
             self.run_query_test(
                 query,
@@ -782,6 +782,39 @@ FROM UNNEST([
         )
         example_view = client.create_table(_view_definition)
         client.delete_table(example_view)
+
+    def test_drop_view_created_via_sql(self) -> None:
+        """Ensures we can delete views created via CREATE VIEW SQL statements."""
+        client = self.client
+        # Create dataset and source table
+        client.create_dataset("sql_view_dataset")
+        client.create_table(
+            bigquery.Table(
+                f"{BQ_EMULATOR_PROJECT_ID}.sql_view_dataset.source_table",
+                [
+                    bigquery.SchemaField("id", "INTEGER"),
+                    bigquery.SchemaField("name", "STRING"),
+                ],
+            )
+        )
+
+        # Create view using CREATE VIEW SQL statement
+        create_view_query = f"""
+            CREATE VIEW `{BQ_EMULATOR_PROJECT_ID}.sql_view_dataset.sql_view`
+            AS SELECT id, name FROM `{BQ_EMULATOR_PROJECT_ID}.sql_view_dataset.source_table`
+        """
+        self.query(create_view_query)
+
+        # Verify the view was created and has correct type
+        view = client.get_table(f"{BQ_EMULATOR_PROJECT_ID}.sql_view_dataset.sql_view")
+        self.assertEqual(view.table_type, "VIEW")
+
+        # Delete the view using delete_table - this should succeed
+        client.delete_table(view)
+
+        # Verify the view is gone
+        with self.assertRaises(Exception):
+            client.get_table(f"{BQ_EMULATOR_PROJECT_ID}.sql_view_dataset.sql_view")
 
     # TODO(#39819) Update this test when the emulator quotes date values here
     def test_json_string_column(self) -> None:
@@ -877,8 +910,8 @@ FROM UNNEST([
 
         # A similar mocking approach didn't quite work. More work to be done.
         with self.assertRaisesRegex(
-                RuntimeError,
-                "Writing to the emulator from pandas is not currently supported.",
+            RuntimeError,
+            "Writing to the emulator from pandas is not currently supported.",
         ):
             more_data = pd.DataFrame(
                 [{"a": 42, "b": "bar"}, {"a": 43, "b": "baz"}],
@@ -919,7 +952,9 @@ FROM UNNEST([
                 ),
             ]
 
-            dataset_ref = DatasetReference(project=self.project_id, dataset_id="test_dataset")
+            dataset_ref = DatasetReference(
+                project=self.project_id, dataset_id="test_dataset"
+            )
             self.client.create_dataset(dataset_ref.dataset_id, exists_ok=True)
             table_ref = TableReference(dataset_ref, f"test_table_{format_.lower()}")
             table = bigquery.Table(table_ref, schema=schema)
@@ -933,7 +968,7 @@ FROM UNNEST([
                     "int_col": 42,
                     "float_col": 3.14,
                     "bool_col": True,
-                    "bytes_col": base64.b64encode(b"abc").decode('utf-8'),
+                    "bytes_col": base64.b64encode(b"abc").decode("utf-8"),
                     "date_col": "2024-01-01",
                     "datetime_col": "2024-01-01T12:00:00",
                     "timestamp_col": "2024-01-01T12:00:00Z",
@@ -1027,7 +1062,6 @@ FROM UNNEST([
             else:
                 assert False, "Unsupported format"
 
-
     def test_timestamp_min_max(self) -> None:
         """Tests resolution of https://github.com/goccy/go-zetasqlite/issues/132
         and https://github.com/goccy/bigquery-emulator/issues/262"""
@@ -1066,8 +1100,8 @@ FROM UNNEST([
             """,
             expected_result=[
                 {
-                    "min_numeric": Decimal('-99999999999999999999999999999.999999999'),
-                    "max_numeric": Decimal('99999999999999999999999999999.999999999'),
+                    "min_numeric": Decimal("-99999999999999999999999999999.999999999"),
+                    "max_numeric": Decimal("99999999999999999999999999999.999999999"),
                 }
             ],
         )
@@ -1081,8 +1115,12 @@ FROM UNNEST([
             """,
             expected_result=[
                 {
-                    "min_bignumeric": Decimal('-578960446186580977117854925043439539266.34992332820282019728792003956564819968'),
-                    "max_bignumeric": Decimal('578960446186580977117854925043439539266.34992332820282019728792003956564819967'),
+                    "min_bignumeric": Decimal(
+                        "-578960446186580977117854925043439539266.34992332820282019728792003956564819968"
+                    ),
+                    "max_bignumeric": Decimal(
+                        "578960446186580977117854925043439539266.34992332820282019728792003956564819967"
+                    ),
                 }
             ],
         )
@@ -1196,17 +1234,17 @@ FROM UNNEST([
         # Test case 1: Simple ASCII string "Hello"
         # Original bytes: b'Hello'
         # Expected base64: 'SGVsbG8='
-        hello_bytes = b'Hello'
-        hello_base64 = base64.b64encode(hello_bytes).decode('utf-8')
-        self.assertEqual(hello_base64, 'SGVsbG8=')
+        hello_bytes = b"Hello"
+        hello_base64 = base64.b64encode(hello_bytes).decode("utf-8")
+        self.assertEqual(hello_base64, "SGVsbG8=")
 
         # Test case 2: Binary data with various byte values
-        binary_bytes = bytes([0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x00, 0xFF, 0xAB])
-        binary_base64 = base64.b64encode(binary_bytes).decode('utf-8')
+        binary_bytes = bytes([0x48, 0x65, 0x6C, 0x6C, 0x6F, 0x00, 0xFF, 0xAB])
+        binary_base64 = base64.b64encode(binary_bytes).decode("utf-8")
 
         # Test case 3: Empty bytes
-        empty_bytes = b''
-        empty_base64 = base64.b64encode(empty_bytes).decode('utf-8')
+        empty_bytes = b""
+        empty_base64 = base64.b64encode(empty_bytes).decode("utf-8")
 
         # Load data into table
         # The BigQuery Python client expects base64-encoded strings for BYTES fields
@@ -1247,11 +1285,7 @@ FROM UNNEST([
         self.run_query_test(
             query_with_to_base64,
             expected_result=[
-                {
-                    "id": 1,
-                    "binary_data": hello_bytes,
-                    "explicit_base64": hello_base64
-                },
+                {"id": 1, "binary_data": hello_bytes, "explicit_base64": hello_base64},
                 {
                     "id": 2,
                     "binary_data": binary_bytes,
