@@ -2110,7 +2110,12 @@ func (h *jobsInsertHandler) Handle(ctx context.Context, r *jobsInsertRequest) (*
 		job.Configuration.Query.QueryParameters,
 	)
 	endTime := time.Now()
-	if job.JobReference.JobId == "" {
+	if job.JobReference == nil {
+		job.JobReference = &bigqueryv2.JobReference{
+			ProjectId: r.project.ID,
+			JobId:     randomID(),
+		}
+	} else if job.JobReference.JobId == "" {
 		job.JobReference.JobId = randomID() // generate job id
 	}
 	if jobErr == nil {
@@ -2256,14 +2261,20 @@ func addTableMetadata(ctx context.Context, server *Server, spec *zetasqlite.Tabl
 		return err
 	}
 	defer tx.RollbackIfNotCommitted()
-	if _, err := createTableMetadata(ctx, tx, server, project, dataset, &bigqueryv2.Table{
+	table := &bigqueryv2.Table{
 		TableReference: &bigqueryv2.TableReference{
 			ProjectId: projectID,
 			DatasetId: datasetID,
 			TableId:   tableID,
 		},
 		Schema: &bigqueryv2.TableSchema{Fields: fields},
-	}); err != nil {
+	}
+	if spec.IsView {
+		table.View = &bigqueryv2.ViewDefinition{
+			Query: spec.Query,
+		}
+	}
+	if _, err := createTableMetadata(ctx, tx, server, project, dataset, table); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
