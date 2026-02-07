@@ -4,8 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"github.com/goccy/go-zetasqlite"
 	"sync"
+
+	"github.com/goccy/go-zetasqlite"
 )
 
 const (
@@ -107,6 +108,8 @@ func (t *Tx) unregister() {
 	t.finalized = true
 }
 
+func (t *Tx) Conn() *ManagedConnection { return t.conn }
+
 func (t *Tx) RollbackIfNotCommitted() error {
 	defer t.unregister()
 	if t.committed {
@@ -203,6 +206,11 @@ func (c *ManagedConnection) ConfigureScope(projectID, datasetID string) *Managed
 	c.ProjectID = projectID
 	c.DatasetID = datasetID
 	return c
+}
+
+// Raw executes the given function with the underlying ZetaSQLite connection.
+func (c *ManagedConnection) Raw(fn func(interface{}) error) error {
+	return c.zetasqliteConnection.Raw(fn)
 }
 
 func (c *ManagedConnection) Begin(ctx context.Context) (*Tx, error) {

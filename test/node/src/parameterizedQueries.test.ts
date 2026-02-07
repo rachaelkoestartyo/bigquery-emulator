@@ -345,4 +345,177 @@ describe('Parameterized Queries (Issue #58)', () => {
       expect(rows[0].result).toBe(9007199254740991);
     });
   });
+
+  describe('Issue #234: UNNEST with Array Parameters', () => {
+    it('should handle UNNEST with ARRAY<STRING> parameter', async () => {
+      // https://github.com/goccy/bigquery-emulator/issues/234
+      // Tests that array parameters work with UNNEST
+      const query = `
+        SELECT *
+        FROM UNNEST(@states) AS state
+        ORDER BY state
+      `;
+
+      const [rows] = await client.query({
+        query,
+        params: {
+          states: ['WA', 'WI', 'WV', 'WY'],
+        },
+      });
+
+      expect(rows).toHaveLength(4);
+      expect(rows[0].state).toBe('WA');
+      expect(rows[1].state).toBe('WI');
+      expect(rows[2].state).toBe('WV');
+      expect(rows[3].state).toBe('WY');
+    });
+
+    it('should handle UNNEST with ARRAY<INT64> parameter', async () => {
+      const query = `
+        SELECT *
+        FROM UNNEST(@numbers) AS num
+        ORDER BY num
+      `;
+
+      const [rows] = await client.query({
+        query,
+        params: {
+          numbers: [1, 2, 3, 4, 5],
+        },
+      });
+
+      expect(rows).toHaveLength(5);
+      expect(rows[0].num).toBe(1);
+      expect(rows[4].num).toBe(5);
+    });
+
+    it('should handle UNNEST with array parameter in JOIN', async () => {
+      const query = `
+        SELECT t.id, t.name, state
+        FROM \`${BQ_EMULATOR_PROJECT_ID}.test_dataset.test_table\` t
+        CROSS JOIN UNNEST(@stateList) AS state
+        WHERE t.id <= 2
+        ORDER BY t.id, state
+      `;
+
+      const [rows] = await client.query({
+        query,
+        params: {
+          stateList: ['CA', 'NY'],
+        },
+      });
+
+      expect(rows).toHaveLength(4);
+      expect(rows[0].id).toBe(1);
+      expect(rows[0].state).toBe('CA');
+      expect(rows[1].id).toBe(1);
+      expect(rows[1].state).toBe('NY');
+    });
+  });
+
+  describe('Issue #312: Null Parameter Handling', () => {
+    it('should handle null string parameter with IS NULL check', async () => {
+      // https://github.com/goccy/bigquery-emulator/issues/312
+      // Tests that null parameters work correctly in IS NULL conditions
+      const query = `
+        SELECT id, name
+        FROM \`${BQ_EMULATOR_PROJECT_ID}.test_dataset.test_table\`
+        WHERE @parameter IS NULL OR name = @parameter
+        ORDER BY id
+      `;
+
+      const [rows] = await client.query({
+        query,
+        params: {
+          parameter: null, // Null parameter
+        },
+        types: {
+          parameter: 'STRING', // Must specify type for null values
+        },
+      });
+
+      // Since parameter is null, the IS NULL condition is true,
+      // so all rows should be returned
+      expect(rows).toHaveLength(5);
+      expect(rows[0].id).toBe(1);
+      expect(rows[4].id).toBe(5);
+    });
+
+    it('should handle null parameter with specific value fallback', async () => {
+      const query = `
+        SELECT id, name
+        FROM \`${BQ_EMULATOR_PROJECT_ID}.test_dataset.test_table\`
+        WHERE @parameter IS NULL OR name = @parameter
+        ORDER BY id
+      `;
+
+      // First with null - should return all rows
+      const [nullRows] = await client.query({
+        query,
+        params: {
+          parameter: null,
+        },
+        types: {
+          parameter: 'STRING',
+        },
+      });
+      expect(nullRows).toHaveLength(5);
+
+      // Then with specific value - should filter
+      const [filteredRows] = await client.query({
+        query,
+        params: {
+          parameter: 'Alice',
+        },
+      });
+      expect(filteredRows).toHaveLength(1);
+      expect(filteredRows[0].name).toBe('Alice');
+    });
+
+    it('should handle null numeric parameter', async () => {
+      const query = `
+        SELECT id, name
+        FROM \`${BQ_EMULATOR_PROJECT_ID}.test_dataset.test_table\`
+        WHERE @numParam IS NULL OR id = @numParam
+        ORDER BY id
+      `;
+
+      const [rows] = await client.query({
+        query,
+        params: {
+          numParam: null,
+        },
+        types: {
+          numParam: 'INT64',
+        },
+      });
+
+      expect(rows).toHaveLength(5);
+    });
+
+    it('should handle multiple null parameters', async () => {
+      const query = `
+        SELECT id, name
+        FROM \`${BQ_EMULATOR_PROJECT_ID}.test_dataset.test_table\`
+        WHERE (@param1 IS NULL OR id = @param1)
+          AND (@param2 IS NULL OR name = @param2)
+        ORDER BY id
+      `;
+
+      const [rows] = await client.query({
+        query,
+        params: {
+          param1: null,
+          param2: null,
+        },
+        types: {
+          param1: 'INT64',
+          param2: 'STRING',
+        },
+      });
+
+      // Both are null, so all rows match
+      expect(rows).toHaveLength(5);
+    });
+  });
 });
