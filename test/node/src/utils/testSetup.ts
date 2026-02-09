@@ -114,7 +114,7 @@ export class BigQueryTestHelper {
     const [rows] = await this.client.query({
       query,
       location: 'US',
-    });
+    }, {parseJSON: true});
     return rows as T[];
   }
 
@@ -129,7 +129,7 @@ export class BigQueryTestHelper {
       query,
       params,
       location: 'US',
-    });
+    }, {parseJSON: true});
     return rows as T[];
   }
 

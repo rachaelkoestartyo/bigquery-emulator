@@ -1543,7 +1543,7 @@ func (h *jobsInsertHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	server := serverFromContext(ctx)
 	project := projectFromContext(ctx)
-	var job bigqueryv2.Job
+	var job flexibleJob
 	if err := json.NewDecoder(r.Body).Decode(&job); err != nil {
 		errorResponse(ctx, w, errInvalid(err.Error()))
 		return
@@ -1551,7 +1551,7 @@ func (h *jobsInsertHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	res, err := h.Handle(ctx, &jobsInsertRequest{
 		server:  server,
 		project: project,
-		job:     &job,
+		job:     &job.Job,
 	})
 	if err != nil {
 		errorResponse(ctx, w, errInvalidQuery(err.Error()))
@@ -2397,20 +2397,20 @@ func (h *jobsQueryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	server := serverFromContext(ctx)
 	project := projectFromContext(ctx)
-	var req bigqueryv2.QueryRequest
+	var req flexibleQueryRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		errorResponse(ctx, w, errInvalid(err.Error()))
 		return
 	}
 	useInt64Timestamp := false
-	if options := req.FormatOptions; options != nil {
+	if options := req.QueryRequest.FormatOptions; options != nil {
 		useInt64Timestamp = options.UseInt64Timestamp
 	}
 	useInt64Timestamp = useInt64Timestamp || isFormatOptionsUseInt64Timestamp(r)
 	res, err := h.Handle(ctx, &jobsQueryRequest{
 		server:            server,
 		project:           project,
-		queryRequest:      &req,
+		queryRequest:      &req.QueryRequest,
 		useInt64Timestamp: useInt64Timestamp,
 	})
 	if err != nil {
