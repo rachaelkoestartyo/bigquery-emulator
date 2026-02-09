@@ -1526,3 +1526,274 @@ FROM UNNEST([
                 },
             ],
         )
+
+    def test_unnest_with_array_parameter(self) -> None:
+        """Tests resolution of https://github.com/goccy/bigquery-emulator/issues/234
+
+        Tests that array parameters work correctly with UNNEST operations.
+        The issue reported that UNNEST with parameterized arrays failed with
+        "Values referenced in UNNEST must be arrays" error.
+        """
+        # Test with ARRAY<STRING>
+        query = """
+        SELECT *
+        FROM UNNEST(@states) AS state
+        ORDER BY state
+        """
+
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ArrayQueryParameter("states", "STRING", ["WA", "WI", "WV", "WY"])
+            ]
+        )
+
+        self.run_query_test(
+            query,
+            expected_result=[
+                {"state": "WA"},
+                {"state": "WI"},
+                {"state": "WV"},
+                {"state": "WY"},
+            ],
+            job_config=job_config,
+        )
+
+    def test_unnest_with_int_array_parameter(self) -> None:
+        """Tests resolution of https://github.com/goccy/bigquery-emulator/issues/234
+
+        Tests UNNEST with integer array parameters.
+        """
+        query = """
+        SELECT *
+        FROM UNNEST(@numbers) AS num
+        ORDER BY num
+        """
+
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ArrayQueryParameter("numbers", "INT64", [1, 2, 3, 4, 5])
+            ]
+        )
+
+        self.run_query_test(
+            query,
+            expected_result=[
+                {"num": 1},
+                {"num": 2},
+                {"num": 3},
+                {"num": 4},
+                {"num": 5},
+            ],
+            job_config=job_config,
+        )
+
+    def test_unnest_array_parameter_with_join(self) -> None:
+        """Tests resolution of https://github.com/goccy/bigquery-emulator/issues/234
+
+        Tests UNNEST with array parameters in a JOIN operation.
+        """
+        address = BigQueryAddress(dataset_id=_DATASET_1, table_id=_TABLE_1)
+        self.create_mock_table(
+            address,
+            schema=[
+                bigquery.SchemaField(
+                    "id",
+                    field_type=bigquery.enums.SqlTypeNames.INTEGER.value,
+                    mode="REQUIRED",
+                ),
+                bigquery.SchemaField(
+                    "name",
+                    field_type=bigquery.enums.SqlTypeNames.STRING.value,
+                    mode="REQUIRED",
+                ),
+            ],
+        )
+        self.load_rows_into_table(
+            address,
+            data=[{"id": 1, "name": "Alice"}, {"id": 2, "name": "Bob"}],
+        )
+
+        query = f"""
+        SELECT t.id, t.name, state
+        FROM `{self.project_id}.{address.dataset_id}.{address.table_id}` t
+        CROSS JOIN UNNEST(@states) AS state
+        ORDER BY t.id, state
+        """
+
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ArrayQueryParameter("states", "STRING", ["CA", "NY"])
+            ]
+        )
+
+        self.run_query_test(
+            query,
+            expected_result=[
+                {"id": 1, "name": "Alice", "state": "CA"},
+                {"id": 1, "name": "Alice", "state": "NY"},
+                {"id": 2, "name": "Bob", "state": "CA"},
+                {"id": 2, "name": "Bob", "state": "NY"},
+            ],
+            job_config=job_config,
+        )
+
+    def test_null_parameter_with_is_null_check(self) -> None:
+        """Tests resolution of https://github.com/goccy/bigquery-emulator/issues/312
+
+        Tests that null parameters work correctly in IS NULL conditions.
+        The issue reported that null string parameters in WHERE clauses with
+        "IS NULL OR parameter = value" patterns caused type inference errors.
+        """
+        address = BigQueryAddress(dataset_id=_DATASET_1, table_id=_TABLE_1)
+        self.create_mock_table(
+            address,
+            schema=[
+                bigquery.SchemaField(
+                    "id",
+                    field_type=bigquery.enums.SqlTypeNames.INTEGER.value,
+                    mode="REQUIRED",
+                ),
+                bigquery.SchemaField(
+                    "name",
+                    field_type=bigquery.enums.SqlTypeNames.STRING.value,
+                    mode="REQUIRED",
+                ),
+            ],
+        )
+        self.load_rows_into_table(
+            address,
+            data=[
+                {"id": 1, "name": "Alice"},
+                {"id": 2, "name": "Bob"},
+                {"id": 3, "name": "Charlie"},
+            ],
+        )
+
+        query = f"""
+        SELECT id, name
+        FROM `{self.project_id}.{address.dataset_id}.{address.table_id}`
+        WHERE @parameter IS NULL OR name = @parameter
+        ORDER BY id
+        """
+
+        # Test with null parameter - should return all rows
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("parameter", "STRING", None)
+            ]
+        )
+
+        self.run_query_test(
+            query,
+            expected_result=[
+                {"id": 1, "name": "Alice"},
+                {"id": 2, "name": "Bob"},
+                {"id": 3, "name": "Charlie"},
+            ],
+            job_config=job_config,
+        )
+
+    def test_null_parameter_with_specific_value(self) -> None:
+        """Tests resolution of https://github.com/goccy/bigquery-emulator/issues/312
+
+        Tests that the same query works with both null and non-null parameter values.
+        """
+        address = BigQueryAddress(dataset_id=_DATASET_1, table_id=_TABLE_1)
+        self.create_mock_table(
+            address,
+            schema=[
+                bigquery.SchemaField(
+                    "id",
+                    field_type=bigquery.enums.SqlTypeNames.INTEGER.value,
+                    mode="REQUIRED",
+                ),
+                bigquery.SchemaField(
+                    "name",
+                    field_type=bigquery.enums.SqlTypeNames.STRING.value,
+                    mode="REQUIRED",
+                ),
+            ],
+        )
+        self.load_rows_into_table(
+            address,
+            data=[
+                {"id": 1, "name": "Alice"},
+                {"id": 2, "name": "Bob"},
+                {"id": 3, "name": "Charlie"},
+            ],
+        )
+
+        query = f"""
+        SELECT id, name
+        FROM `{self.project_id}.{address.dataset_id}.{address.table_id}`
+        WHERE @parameter IS NULL OR name = @parameter
+        ORDER BY id
+        """
+
+        # Test with specific value - should filter
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("parameter", "STRING", "Alice")
+            ]
+        )
+
+        self.run_query_test(
+            query,
+            expected_result=[
+                {"id": 1, "name": "Alice"},
+            ],
+            job_config=job_config,
+        )
+
+    def test_null_numeric_parameter(self) -> None:
+        """Tests resolution of https://github.com/goccy/bigquery-emulator/issues/312
+
+        Tests that null numeric parameters work correctly.
+        """
+        address = BigQueryAddress(dataset_id=_DATASET_1, table_id=_TABLE_1)
+        self.create_mock_table(
+            address,
+            schema=[
+                bigquery.SchemaField(
+                    "id",
+                    field_type=bigquery.enums.SqlTypeNames.INTEGER.value,
+                    mode="REQUIRED",
+                ),
+                bigquery.SchemaField(
+                    "value",
+                    field_type=bigquery.enums.SqlTypeNames.INTEGER.value,
+                    mode="NULLABLE",
+                ),
+            ],
+        )
+        self.load_rows_into_table(
+            address,
+            data=[
+                {"id": 1, "value": 10},
+                {"id": 2, "value": 20},
+                {"id": 3, "value": 30},
+            ],
+        )
+
+        query = f"""
+        SELECT id, value
+        FROM `{self.project_id}.{address.dataset_id}.{address.table_id}`
+        WHERE @numParam IS NULL OR value = @numParam
+        ORDER BY id
+        """
+
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("numParam", "INT64", None)
+            ]
+        )
+
+        self.run_query_test(
+            query,
+            expected_result=[
+                {"id": 1, "value": 10},
+                {"id": 2, "value": 20},
+                {"id": 3, "value": 30},
+            ],
+            job_config=job_config,
+        )

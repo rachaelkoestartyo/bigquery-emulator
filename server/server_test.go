@@ -2950,6 +2950,600 @@ ORDER BY qty DESC;`)
 	if rowCount != 1 {
 		t.Fatal("failed to get result")
 	}
+
+	query = client.Query("SELECT * FROM `test.test_dataset.test_table` WHERE @parameter IS NULL OR 'target text' = @parameter")
+	query.Parameters = []bigquery.QueryParameter{
+		{
+			Name: "parameter",
+			Value: &bigquery.QueryParameterValue{
+				Type: bigquery.StandardSQLDataType{
+					TypeKind: "STRING",
+				},
+				Value: "test",
+			},
+		},
+	}
+	it, err = query.Read(ctx)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		var row []bigquery.Value
+		if err := it.Next(&row); err != nil {
+			if err != iterator.Done {
+				t.Fatal(err)
+			}
+			break
+		}
+		if len(row) != 3 {
+			t.Fatalf("failed to get row: %v", row)
+		}
+	}
+
+	query = client.Query("SELECT * FROM UNNEST(@states)")
+	query.Parameters = []bigquery.QueryParameter{
+		{
+			Name:  "states",
+			Value: []string{"WA", "VA", "WV", "WY"},
+		},
+	}
+	it, err = query.Read(ctx)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		var row []bigquery.Value
+		if err := it.Next(&row); err != nil {
+			if err != iterator.Done {
+				t.Fatal(err)
+			}
+			break
+		}
+		if len(row) != 1 {
+			t.Fatalf("failed to get row: %v", row)
+		}
+	}
+}
+
+// TestQueryWithNumericParameters tests issue #58: https://github.com/Recidiviz/bigquery-emulator/issues/58
+// Verifies that numeric query parameters (INT64, FLOAT64) work correctly in various SQL contexts,
+// particularly in LIMIT clauses where the Node.js client sends numbers as JSON numbers (not strings).
+func TestQueryWithNumericParameters(t *testing.T) {
+	const (
+		projectID = "test"
+		datasetID = "test_dataset"
+		tableID   = "test_table"
+	)
+
+	ctx := context.Background()
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create test table with 5 rows of sample data
+	project := types.NewProject(
+		projectID,
+		types.NewDataset(
+			datasetID,
+			types.NewTable(
+				tableID,
+				[]*types.Column{
+					types.NewColumn("id", types.INTEGER),
+					types.NewColumn("name", types.STRING),
+					types.NewColumn("value", types.FLOAT),
+				},
+				types.Data{
+					{"id": 1, "name": "Alice", "value": 10.5},
+					{"id": 2, "name": "Bob", "value": 20.7},
+					{"id": 3, "name": "Charlie", "value": 30.2},
+					{"id": 4, "name": "David", "value": 40.9},
+					{"id": 5, "name": "Eve", "value": 50.1},
+				},
+			),
+		),
+	)
+	if err := bqServer.Load(server.StructSource(project)); err != nil {
+		t.Fatal(err)
+	}
+
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Close()
+	}()
+
+	client, err := bigquery.NewClient(
+		ctx,
+		projectID,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	t.Run("INT64 in LIMIT clause", func(t *testing.T) {
+		// This is the exact scenario from issue #58:
+		// Query with LIMIT using a numeric parameter
+		query := client.Query(`
+			SELECT * FROM test_dataset.test_table
+			ORDER BY id ASC
+			LIMIT @limit
+		`)
+		query.Parameters = []bigquery.QueryParameter{
+			{Name: "limit", Value: 2}, // Pass as int, not string
+		}
+
+		it, err := query.Read(ctx)
+		if err != nil {
+			t.Fatalf("query.Read failed: %v", err)
+		}
+
+		var rows [][]bigquery.Value
+		for {
+			var row []bigquery.Value
+			if err := it.Next(&row); err != nil {
+				if err == iterator.Done {
+					break
+				}
+				t.Fatalf("iterator.Next failed: %v", err)
+			}
+			rows = append(rows, row)
+		}
+
+		if len(rows) != 2 {
+			t.Fatalf("expected 2 rows, got %d", len(rows))
+		}
+		// Verify we got Alice and Bob (id 1 and 2)
+		if rows[0][0].(int64) != 1 || rows[1][0].(int64) != 2 {
+			t.Errorf("unexpected row ids: got %v and %v", rows[0][0], rows[1][0])
+		}
+	})
+
+	t.Run("INT64 in WHERE clause", func(t *testing.T) {
+		query := client.Query(`
+			SELECT * FROM test_dataset.test_table
+			WHERE id = @id
+		`)
+		query.Parameters = []bigquery.QueryParameter{
+			{Name: "id", Value: 3}, // Numeric parameter
+		}
+
+		it, err := query.Read(ctx)
+		if err != nil {
+			t.Fatalf("query.Read failed: %v", err)
+		}
+
+		var rows [][]bigquery.Value
+		for {
+			var row []bigquery.Value
+			if err := it.Next(&row); err != nil {
+				if err == iterator.Done {
+					break
+				}
+				t.Fatalf("iterator.Next failed: %v", err)
+			}
+			rows = append(rows, row)
+		}
+
+		if len(rows) != 1 {
+			t.Fatalf("expected 1 row, got %d", len(rows))
+		}
+		if rows[0][1].(string) != "Charlie" {
+			t.Errorf("expected Charlie, got %v", rows[0][1])
+		}
+	})
+
+	t.Run("INT64 with comparison operators", func(t *testing.T) {
+		query := client.Query(`
+			SELECT * FROM test_dataset.test_table
+			WHERE id >= @minId
+			ORDER BY id ASC
+		`)
+		query.Parameters = []bigquery.QueryParameter{
+			{Name: "minId", Value: 4}, // Numeric parameter
+		}
+
+		it, err := query.Read(ctx)
+		if err != nil {
+			t.Fatalf("query.Read failed: %v", err)
+		}
+
+		var rows [][]bigquery.Value
+		for {
+			var row []bigquery.Value
+			if err := it.Next(&row); err != nil {
+				if err == iterator.Done {
+					break
+				}
+				t.Fatalf("iterator.Next failed: %v", err)
+			}
+			rows = append(rows, row)
+		}
+
+		if len(rows) != 2 {
+			t.Fatalf("expected 2 rows, got %d", len(rows))
+		}
+		// Should get David and Eve (id 4 and 5)
+		if rows[0][0].(int64) != 4 || rows[1][0].(int64) != 5 {
+			t.Errorf("unexpected row ids: got %v and %v", rows[0][0], rows[1][0])
+		}
+	})
+
+	t.Run("FLOAT64 parameter", func(t *testing.T) {
+		query := client.Query(`
+			SELECT * FROM test_dataset.test_table
+			WHERE value > @threshold
+			ORDER BY id ASC
+		`)
+		query.Parameters = []bigquery.QueryParameter{
+			{Name: "threshold", Value: 25.5}, // Float parameter
+		}
+
+		it, err := query.Read(ctx)
+		if err != nil {
+			t.Fatalf("query.Read failed: %v", err)
+		}
+
+		var rows [][]bigquery.Value
+		for {
+			var row []bigquery.Value
+			if err := it.Next(&row); err != nil {
+				if err == iterator.Done {
+					break
+				}
+				t.Fatalf("iterator.Next failed: %v", err)
+			}
+			rows = append(rows, row)
+		}
+
+		if len(rows) != 3 {
+			t.Fatalf("expected 3 rows, got %d", len(rows))
+		}
+		// Should get Charlie, David, and Eve
+		if rows[0][1].(string) != "Charlie" || rows[1][1].(string) != "David" || rows[2][1].(string) != "Eve" {
+			t.Errorf("unexpected names: got %v, %v, %v", rows[0][1], rows[1][1], rows[2][1])
+		}
+	})
+
+	t.Run("Multiple numeric parameters", func(t *testing.T) {
+		query := client.Query(`
+			SELECT * FROM test_dataset.test_table
+			WHERE id >= @minId AND id <= @maxId
+			ORDER BY id ASC
+		`)
+		query.Parameters = []bigquery.QueryParameter{
+			{Name: "minId", Value: 2}, // Numeric parameter
+			{Name: "maxId", Value: 4}, // Numeric parameter
+		}
+
+		it, err := query.Read(ctx)
+		if err != nil {
+			t.Fatalf("query.Read failed: %v", err)
+		}
+
+		var rows [][]bigquery.Value
+		for {
+			var row []bigquery.Value
+			if err := it.Next(&row); err != nil {
+				if err == iterator.Done {
+					break
+				}
+				t.Fatalf("iterator.Next failed: %v", err)
+			}
+			rows = append(rows, row)
+		}
+
+		if len(rows) != 3 {
+			t.Fatalf("expected 3 rows, got %d", len(rows))
+		}
+		// Should get Bob, Charlie, and David (id 2, 3, 4)
+		if rows[0][0].(int64) != 2 || rows[1][0].(int64) != 3 || rows[2][0].(int64) != 4 {
+			t.Errorf("unexpected row ids: got %v, %v, %v", rows[0][0], rows[1][0], rows[2][0])
+		}
+	})
+
+	t.Run("LIMIT with OFFSET", func(t *testing.T) {
+		query := client.Query(`
+			SELECT * FROM test_dataset.test_table
+			ORDER BY id ASC
+			LIMIT @limit OFFSET @offset
+		`)
+		query.Parameters = []bigquery.QueryParameter{
+			{Name: "limit", Value: 2}, // Both as numbers
+			{Name: "offset", Value: 2},
+		}
+
+		it, err := query.Read(ctx)
+		if err != nil {
+			t.Fatalf("query.Read failed: %v", err)
+		}
+
+		var rows [][]bigquery.Value
+		for {
+			var row []bigquery.Value
+			if err := it.Next(&row); err != nil {
+				if err == iterator.Done {
+					break
+				}
+				t.Fatalf("iterator.Next failed: %v", err)
+			}
+			rows = append(rows, row)
+		}
+
+		if len(rows) != 2 {
+			t.Fatalf("expected 2 rows, got %d", len(rows))
+		}
+		// Should get Charlie and David (skipped Alice and Bob)
+		if rows[0][0].(int64) != 3 || rows[1][0].(int64) != 4 {
+			t.Errorf("unexpected row ids: got %v and %v", rows[0][0], rows[1][0])
+		}
+	})
+
+	t.Run("Zero and negative values", func(t *testing.T) {
+		// Test zero as parameter value
+		query := client.Query(`
+			SELECT * FROM test_dataset.test_table
+			WHERE id > @minId
+			ORDER BY id ASC
+		`)
+		query.Parameters = []bigquery.QueryParameter{
+			{Name: "minId", Value: 0}, // Zero as numeric parameter
+		}
+
+		it, err := query.Read(ctx)
+		if err != nil {
+			t.Fatalf("query.Read failed: %v", err)
+		}
+
+		var rowCount int
+		for {
+			var row []bigquery.Value
+			if err := it.Next(&row); err != nil {
+				if err == iterator.Done {
+					break
+				}
+				t.Fatalf("iterator.Next failed: %v", err)
+			}
+			rowCount++
+		}
+
+		if rowCount != 5 {
+			t.Fatalf("expected 5 rows with id > 0, got %d", rowCount)
+		}
+
+		// Test negative number
+		query2 := client.Query(`SELECT @negativeValue as result`)
+		query2.Parameters = []bigquery.QueryParameter{
+			{Name: "negativeValue", Value: -42},
+		}
+
+		it2, err := query2.Read(ctx)
+		if err != nil {
+			t.Fatalf("query.Read failed: %v", err)
+		}
+
+		var row []bigquery.Value
+		if err := it2.Next(&row); err != nil {
+			t.Fatalf("iterator.Next failed: %v", err)
+		}
+
+		if row[0].(int64) != -42 {
+			t.Errorf("expected -42, got %v", row[0])
+		}
+	})
+}
+
+// TestQueryWithNullParameters tests issue #312: https://github.com/goccy/bigquery-emulator/issues/312
+// Verifies that null parameters work correctly in IS NULL conditions.
+// The issue reported that null string parameters in WHERE clauses with
+// "IS NULL OR parameter = value" patterns caused type inference errors.
+func TestQueryWithNullParameters(t *testing.T) {
+	const (
+		projectID = "test"
+		datasetID = "test_dataset"
+		tableID   = "test_table"
+	)
+
+	ctx := context.Background()
+
+	bqServer, err := server.New(server.TempStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create test table with sample data
+	project := types.NewProject(
+		projectID,
+		types.NewDataset(
+			datasetID,
+			types.NewTable(
+				tableID,
+				[]*types.Column{
+					types.NewColumn("id", types.INTEGER),
+					types.NewColumn("name", types.STRING),
+				},
+				types.Data{
+					{"id": 1, "name": "Alice"},
+					{"id": 2, "name": "Bob"},
+					{"id": 3, "name": "Charlie"},
+				},
+			),
+		),
+	)
+	if err := bqServer.Load(server.StructSource(project)); err != nil {
+		t.Fatal(err)
+	}
+
+	testServer := bqServer.TestServer()
+	defer func() {
+		testServer.Close()
+		bqServer.Close()
+	}()
+
+	client, err := bigquery.NewClient(
+		ctx,
+		projectID,
+		option.WithEndpoint(testServer.URL),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	t.Run("Null string parameter with IS NULL check", func(t *testing.T) {
+		// Test with null parameter - should return all rows
+		query := client.Query(`
+			SELECT id, name
+			FROM test_dataset.test_table
+			WHERE @parameter IS NULL OR name = @parameter
+			ORDER BY id
+		`)
+		query.Parameters = []bigquery.QueryParameter{
+			{Name: "parameter", Value: bigquery.NullString{}}, // Null parameter
+		}
+
+		it, err := query.Read(ctx)
+		if err != nil {
+			t.Fatalf("query.Read failed: %v", err)
+		}
+
+		var rows [][]bigquery.Value
+		for {
+			var row []bigquery.Value
+			if err := it.Next(&row); err != nil {
+				if err == iterator.Done {
+					break
+				}
+				t.Fatalf("iterator.Next failed: %v", err)
+			}
+			rows = append(rows, row)
+		}
+
+		// Since parameter is null, the IS NULL condition is true,
+		// so all rows should be returned
+		if len(rows) != 3 {
+			t.Fatalf("expected 3 rows, got %d", len(rows))
+		}
+		// Verify we got all three people
+		if rows[0][0].(int64) != 1 || rows[1][0].(int64) != 2 || rows[2][0].(int64) != 3 {
+			t.Errorf("unexpected row ids: got %v, %v, %v", rows[0][0], rows[1][0], rows[2][0])
+		}
+	})
+
+	t.Run("Null parameter with specific value fallback", func(t *testing.T) {
+		// Test with specific value - should filter
+		query := client.Query(`
+			SELECT id, name
+			FROM test_dataset.test_table
+			WHERE @parameter IS NULL OR name = @parameter
+			ORDER BY id
+		`)
+		query.Parameters = []bigquery.QueryParameter{
+			{Name: "parameter", Value: "Alice"}, // Non-null parameter
+		}
+
+		it, err := query.Read(ctx)
+		if err != nil {
+			t.Fatalf("query.Read failed: %v", err)
+		}
+
+		var rows [][]bigquery.Value
+		for {
+			var row []bigquery.Value
+			if err := it.Next(&row); err != nil {
+				if err == iterator.Done {
+					break
+				}
+				t.Fatalf("iterator.Next failed: %v", err)
+			}
+			rows = append(rows, row)
+		}
+
+		// Should only get Alice
+		if len(rows) != 1 {
+			t.Fatalf("expected 1 row, got %d", len(rows))
+		}
+		if rows[0][1].(string) != "Alice" {
+			t.Errorf("expected Alice, got %v", rows[0][1])
+		}
+	})
+
+	t.Run("Null numeric parameter", func(t *testing.T) {
+		query := client.Query(`
+			SELECT id, name
+			FROM test_dataset.test_table
+			WHERE @numParam IS NULL OR id = @numParam
+			ORDER BY id
+		`)
+		query.Parameters = []bigquery.QueryParameter{
+			{Name: "numParam", Value: bigquery.NullInt64{}},
+		}
+
+		it, err := query.Read(ctx)
+		if err != nil {
+			t.Fatalf("query.Read failed: %v", err)
+		}
+
+		var rowCount int
+		for {
+			var row []bigquery.Value
+			if err := it.Next(&row); err != nil {
+				if err == iterator.Done {
+					break
+				}
+				t.Fatalf("iterator.Next failed: %v", err)
+			}
+			rowCount++
+		}
+
+		// Should return all rows since parameter is null
+		if rowCount != 3 {
+			t.Fatalf("expected 3 rows, got %d", rowCount)
+		}
+	})
+
+	t.Run("Multiple null parameters", func(t *testing.T) {
+		query := client.Query(`
+			SELECT id, name
+			FROM test_dataset.test_table
+			WHERE (@param1 IS NULL OR id = @param1)
+			  AND (@param2 IS NULL OR name = @param2)
+			ORDER BY id
+		`)
+		query.Parameters = []bigquery.QueryParameter{
+			{Name: "param1", Value: bigquery.NullInt64{}},
+			{Name: "param2", Value: bigquery.NullString{}},
+		}
+
+		it, err := query.Read(ctx)
+		if err != nil {
+			t.Fatalf("query.Read failed: %v", err)
+		}
+
+		var rowCount int
+		for {
+			var row []bigquery.Value
+			if err := it.Next(&row); err != nil {
+				if err == iterator.Done {
+					break
+				}
+				t.Fatalf("iterator.Next failed: %v", err)
+			}
+			rowCount++
+		}
+
+		// Both are null, so all rows match
+		if rowCount != 3 {
+			t.Fatalf("expected 3 rows, got %d", rowCount)
+		}
+	})
 }
 
 func TestMultipleProject(t *testing.T) {
@@ -3151,7 +3745,6 @@ func TestInformationSchema(t *testing.T) {
 			}
 		}
 	})
-
 }
 
 func TestWriteDisposition(t *testing.T) {

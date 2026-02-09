@@ -212,8 +212,9 @@ class BigQueryEmulatorTestCase(unittest.TestCase):
             query_str: str,
             expected_result: Iterable[Dict[str, Any]],
             enforce_order: bool = True,
+            **kwargs
     ) -> None:
-        query_job = self.client.query(query=query_str)
+        query_job = self.client.query(query=query_str, **kwargs)
         contents = list({key: row.get(key) for key in row.keys()} for row in query_job.result())
         if enforce_order:
             self.assertEqual(expected_result, contents)
