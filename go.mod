@@ -118,4 +118,4 @@ require (
 	modernc.org/sqlite v1.37.0
 )
 
-replace github.com/goccy/go-zetasqlite => github.com/rachaelkoestartyo/go-zetasqlite v1.0.0-liferay-patch-1
+replace github.com/goccy/go-zetasqlite => github.com/rachaelkoestartyo/go-zetasqlite v1.0.0-liferay-patch-2
